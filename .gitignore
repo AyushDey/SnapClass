@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Logs
+app.log
+
+# VSCode folders
+.vscode

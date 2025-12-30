@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+app.log
+references/
+tests/
+test_logs.txt
+postman_collection.json
+POSTMAN_README.md
+debug_tests.py

@@ -1,88 +1,236 @@
 import torch
 import torchvision.transforms as transforms
-from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
-from PIL import Image
+from torchvision.models import resnet18, ResNet18_Weights
+from PIL import Image, UnidentifiedImageError
 import os
 import torch.nn.functional as F
+import torch.nn as nn
+import threading
+from utils import setup_logger
+
+# Initialize logger
+logger = setup_logger("snapclass.classifier")
 
 class ImageClassifier:
     def __init__(self, references_dir: str = "references"):
         self.device = torch.device("cpu") # Focusing on offline/minimal compute, CPU is safer default.
-        weights = MobileNet_V3_Small_Weights.DEFAULT
-        self.model = mobilenet_v3_small(weights=weights)
-        self.model.eval()
-        self.model.to(self.device)
+        logger.info(f"Initializing ImageClassifier on device: {self.device}")
         
-        # We need the embedding, not the final classification. 
-        # MobileNetV3 classifier part has a 'dropout' and 'fc'. We can just use the backbone + pooling or hook into it.
-        # Alternatively, we can just replace the classifier with Identity or remove the last layer.
-        
-        # Taking the features before the final classification layer.
-        # Structure: features -> avgpool -> classifier
-        # We'll use the output of the avgpool layer effectively.
-        
-        self.preprocess = weights.transforms()
+        try:
+            weights = ResNet18_Weights.DEFAULT
+            self.model = resnet18(weights=weights)
+            
+            # Replace the final classification layer with Identity to get embeddings
+            self.model.fc = nn.Identity()
+            
+            self.model.eval()
+            self.model.to(self.device)
+            self.preprocess = weights.transforms()
+            logger.info("ResNet18 model loaded successfully.")
+        except Exception as e:
+            logger.critical(f"Failed to load user model: {e}")
+            raise e
+
         self.references_dir = references_dir
         self.reference_embeddings = {}
+        self._lock = threading.Lock() # Ensure thread safety for reference updates
+        
         self.load_references()
 
     def get_embedding(self, image: Image.Image):
-        image_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
+        try:
+            image_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
+            
+            with torch.no_grad():
+                # For ResNet18 with Identity fc:
+                # The output of avgpool is flattened and passed to fc (Identity)
+                # We want the output of the model which is [1, 512]
+                x = self.model(image_tensor)
+                
+                # Normalize embedding for cosine similarity to work best
+                x = F.normalize(x, p=2, dim=1)
+            return x
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}")
+            raise e
+
+    def _process_image(self, img_path: str, augment_transforms: list) -> list:
+        """
+        Process a single image: load, classify (embed), and augment.
+        Returns a list of embeddings (original + augmented).
+        """
+        embeddings = []
+        try:
+            # Validate image by opening
+            original_image = Image.open(img_path).convert("RGB")
+            
+            # 1. Original
+            emb = self.get_embedding(original_image)
+            embeddings.append(emb)
+            
+            # 2. Augmented versions
+            # We'll generate a few variations to cover different "views" or conditions
+            for _ in range(2): # Repeat random transforms a few times
+                for t in augment_transforms:
+                    aug_img = t(original_image)
+                    aug_emb = self.get_embedding(aug_img)
+                    embeddings.append(aug_emb)
+                    
+        except (UnidentifiedImageError, OSError) as e:
+            logger.warning(f"Skipping corrupt or invalid image {os.path.basename(img_path)}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error loading {os.path.basename(img_path)}: {e}")
+            
+        return embeddings
+
+    def _process_label_directory(self, label_dir: str, label: str, augment_transforms: list):
+        """
+        Process a specific label directory, iterating over all valid images.
+        Returns a list of all embeddings collected for this label.
+        """
+        label_embeddings = []
         
-        with torch.no_grad():
-            # Forward pass through features
-            x = self.model.features(image_tensor)
-            x = self.model.avgpool(x)
-            x = torch.flatten(x, 1)
-            # Normalize embedding for cosine similarity to work best
-            x = F.normalize(x, p=2, dim=1)
-        return x
+        # Iterate over files in the label directory
+        for img_file in os.listdir(label_dir):
+            if img_file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp')):
+                img_path = os.path.join(label_dir, img_file)
+                # Process the individual image
+                img_embeddings = self._process_image(img_path, augment_transforms)
+                label_embeddings.extend(img_embeddings)
+                
+        return label_embeddings
 
     def load_references(self):
-        print("Loading references...")
-        self.reference_embeddings = {}
-        if not os.path.exists(self.references_dir):
-            os.makedirs(self.references_dir)
-            return
+        with self._lock:
+            logger.info("Loading references with augmentation...")
+            self.reference_embeddings = {}
+            self.search_matrix = None
+            self.search_labels = []
 
-        for label in os.listdir(self.references_dir):
-            label_dir = os.path.join(self.references_dir, label)
-            if os.path.isdir(label_dir):
-                embeddings = []
-                for img_file in os.listdir(label_dir):
-                    if img_file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp')):
-                        try:
-                            img_path = os.path.join(label_dir, img_file)
-                            image = Image.open(img_path).convert("RGB")
-                            emb = self.get_embedding(image)
-                            embeddings.append(emb)
-                        except Exception as e:
-                            print(f"Error loading {img_file}: {e}")
-                if embeddings:
-                    self.reference_embeddings[label] = torch.cat(embeddings)
-        print(f"Loaded references for {len(self.reference_embeddings)} classes.")
+            if not os.path.exists(self.references_dir):
+                logger.warning(f"References directory '{self.references_dir}' does not exist. Creating it.")
+                os.makedirs(self.references_dir)
+                return
 
-    def classify(self, image: Image.Image, threshold: float = 0.7):
-        if not self.reference_embeddings:
-            return {"class": "Unknown", "confidence": 0.0, "message": "No references available"}
+            # Augmentation transforms for robustness
+            augment_transforms = [
+                transforms.RandomHorizontalFlip(p=1.0),
+                transforms.RandomRotation(degrees=15),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2),
+                transforms.ColorJitter(saturation=0.2)
+            ]
 
-        target_emb = self.get_embedding(image) # Shape: [1, 576]
-        
-        best_score = -1.0
-        best_label = "Unknown"
+            all_embeddings_list = []
+            all_labels_list = []
 
-        for label, ref_embs in self.reference_embeddings.items():
-            # ref_embs shape: [N, 576]
-            # target_emb shape: [1, 576]
-            # Cosine similarity is dot product of normalized vectors
-            similarities = torch.mm(target_emb, ref_embs.t()) # Shape [1, N]
-            score = torch.max(similarities).item()
+            count = 0
+            for label in os.listdir(self.references_dir):
+                label_dir = os.path.join(self.references_dir, label)
+                if os.path.isdir(label_dir):
+                    # Process the directory for this label
+                    embeddings = self._process_label_directory(label_dir, label, augment_transforms)
+                    
+                    if embeddings:
+                        # Store as a matrix [N, 512] for legacy/metadata access
+                        # embeddings is a list of tensors [1, 512], so cat makes it [N, 512]
+                        self.reference_embeddings[label] = torch.cat(embeddings)
+                        
+                        all_embeddings_list.extend(embeddings)
+                        all_labels_list.extend([label] * len(embeddings))
+                        count += 1
             
-            if score > best_score:
-                best_score = score
-                best_label = label
+            # Build global search matrix
+            if all_embeddings_list:
+                self.search_matrix = torch.cat(all_embeddings_list) # [Total_N, 512]
+                self.search_labels = all_labels_list
+                logger.info(f"Loaded references for {count} classes. Total embeddings: {len(self.search_labels)}")
+            else:
+                logger.info("No references loaded.")
 
-        if best_score < threshold:
-            return {"class": "Unknown", "confidence": round(best_score, 4)}
+    def _get_scaled_embedding(self, image: Image.Image, scale: float):
+        """Helper to resize image if needed and get embedding."""
+        if abs(scale - 1.0) < 1e-9:
+             return self.get_embedding(image)
         
-        return {"class": best_label, "confidence": round(best_score, 4)}
+        base_width, base_height = image.size
+        new_size = (int(base_width * scale), int(base_height * scale))
+        resized_img = image.resize(new_size, Image.Resampling.LANCZOS)
+        return self.get_embedding(resized_img)
+
+    def _collect_matches_from_embedding(self, target_emb, search_matrix) -> list:
+        """Finds top matches for a single embedding against the matrix."""
+        # Vectorized Cosine Similarity
+        similarities = torch.mm(target_emb, search_matrix.t())
+        
+        # Check top K matches
+        k = min(100, similarities.size(1))
+        top_scores, top_indices = torch.topk(similarities, k=k)
+        
+        return list(zip(top_scores[0].tolist(), top_indices[0].tolist()))
+
+    def classify(self, image: Image.Image, threshold: float = 0.5):
+        # Optimization: Vectorized search O(1) Python overhead vs O(N) previously
+        
+        # Lowered threshold to 0.5 for better recall with ResNet18 embeddings
+        
+        # Multi-scale inference
+        scales = [1.0, 0.8, 1.2]
+        
+        best_overall_score = -1.0
+        best_overall_label = "Unknown"
+        final_matches_map = {} # label -> max_score
+
+        # Snapshot references to avoid holding lock during heavy computation
+        # For vectorized search, we just need the matrix and labels list.
+        # These are atomic replacements in load_references, so effectively thread-safe read is likely fine,
+        # but lock ensures we don't read during a half-update (though unlikely with atomic assign).
+        # We'll clone the tensor reference effectively.
+        with self._lock:
+            if self.search_matrix is None:
+                logger.warning("Classification attempted with no references loaded.")
+                return {"class": "Unknown", "confidence": 0.0, "message": "No references available"}
+            
+            search_matrix = self.search_matrix # [Total_N, 512]
+            search_labels = self.search_labels
+
+        try:
+            for scale in scales:
+                target_emb = self._get_scaled_embedding(image, scale)
+                matches = self._collect_matches_from_embedding(target_emb, search_matrix)
+                
+                for score, idx in matches:
+                    label = search_labels[idx]
+                    
+                    if label not in final_matches_map or score > final_matches_map[label]:
+                        final_matches_map[label] = score
+
+                    if score > best_overall_score:
+                        best_overall_score = score
+                        best_overall_label = label
+
+            # Format matches list
+            if best_overall_score >= threshold:
+                result_class = best_overall_label
+            else:
+                result_class = "Unknown"
+
+            # Format matches list, excluding the identified class
+            all_scores = [
+                {"class": k, "score": round(v, 4)} 
+                for k, v in final_matches_map.items() 
+                if k != result_class
+            ]
+            all_scores.sort(key=lambda x: x["score"], reverse=True)
+
+            result = {
+                "class": result_class,
+                "confidence": round(best_overall_score, 4),
+                "matches": all_scores[:5] # Top 5 matches excluding the winner
+            }
+            
+            logger.debug(f"Classified image as {result['class']} (Conf: {result['confidence']})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error during classification: {e}")
+            raise e

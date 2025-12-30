@@ -1,0 +1,134 @@
+{
+	"info": {
+		"_postman_id": "api-classification-collection",
+		"name": "SnapClass API",
+		"description": "Collection for testing the SnapClass Offline Few-Shot Classifier API.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Check Health",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						""
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Classify Image",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"description": "Image file to classify"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/classify",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"classify"
+					]
+				},
+				"description": "Upload an image to get its classification based on reference images."
+			},
+			"response": []
+		},
+		{
+			"name": "Add Reference Image",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "label",
+							"value": "binoculars",
+							"type": "text",
+							"description": "Label for the reference image"
+						},
+						{
+							"key": "file",
+							"type": "file",
+							"description": "Reference image file"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/add_reference",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"add_reference"
+					]
+				},
+				"description": "Upload a new reference image for a specific label."
+			},
+			"response": []
+		},
+		{
+			"name": "Refresh References",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/refresh",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"refresh"
+					]
+				},
+				"description": "Reloads reference images from disk."
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://127.0.0.1:8000",
+			"type": "string"
+		}
+	]
+}
