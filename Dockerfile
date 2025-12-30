@@ -1,7 +1,8 @@
 FROM python:3.13-slim-bookworm
 
 # The installer requires curl (and certificates) to download the release archive
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Download the latest installer
 ADD https://astral.sh/uv/install.sh /uv-installer.sh
@@ -25,8 +26,8 @@ RUN uv sync --frozen --no-dev
 # Place the virtualenv in the path
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Copy source code
-COPY . .
+# Copy source code (explicit listing to avoid accidental inclusion of sensitive files)
+COPY main.py classifier.py utils.py ./
 
 # Run application
 # Host 0.0.0.0 is crucial for Docker networking
