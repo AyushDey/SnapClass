@@ -24,20 +24,33 @@ def api_client(temp_references_dir):
     Returns a TestClient where the global classifier is pointed 
     to a temporary directory to avoid messing with real data.
     """
-    from main import app, classifier
-    
-    # Save original dir
-    original_dir = classifier.references_dir
-    
-    # Point to temp dir
-    classifier.references_dir = temp_references_dir
-    # Reset internal state
-    classifier.reference_embeddings = {}
-    classifier.search_matrix = None
-    classifier.search_labels = []
-    
-    client = TestClient(app)
-    yield client
-    
-    # Restore
-    classifier.references_dir = original_dir
+    from main import app
+    # We need to import the global classifier variable, but it's None until startup.
+    # However, TestClient(app) triggers startup. 
+    # But because we need to patch the classifier's dir *after* startup but *before* tests (or simpler: patch it on the instance),
+    # let's modify the flow.
+
+    with TestClient(app) as client:
+        # Import inside to get the updated reference if needed, 
+        # but 'from main import classifier' imports the name at that moment (which is None).
+        # We need to access it from the module namespace dynamically or after startup.
+        import main
+        
+        if main.classifier is None:
+            raise RuntimeError("Classifier not initialized after TestClient startup")
+
+        # Save original dir
+        original_dir = main.classifier.references_dir
+        
+        # Point to temp dir
+        main.classifier.references_dir = temp_references_dir
+        # Reset internal state
+        main.classifier.reference_embeddings = {}
+        main.classifier.search_matrix = None
+        main.classifier.search_labels = []
+        
+        yield client
+        
+        # Restore
+        if main.classifier:
+            main.classifier.references_dir = original_dir

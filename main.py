@@ -8,24 +8,35 @@ import shutil
 from utils import setup_logger, intercept_uvicorn_logs
 from fastapi.concurrency import run_in_threadpool
 
+from contextlib import asynccontextmanager
+
 # Setup Logger
 logger = setup_logger("snapclass.api")
 
-app = FastAPI(title="SnapClass: Offline Few-Shot Classifier")
+# Initialize classifier global variable
+classifier = None
 
-@app.on_event("startup")
-async def startup_event():
-    # Unify logging format for Uvicorn
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
     intercept_uvicorn_logs()
     logger.info("Application startup: Logging unified.")
+    
+    global classifier
+    try:
+        classifier = ImageClassifier()
+        logger.info("Classifier initialized successfully.")
+    except Exception as e:
+        logger.critical(f"Failed to initialize classifier: {e}")
+        # We allow app startup but endpoints might fail, or we could exit.
+        # Ideally, if core dependency fails, we should probably crash or health check should fail.
+    
+    yield
+    
+    # Shutdown logic (if any)
+    logger.info("Application shutdown.")
 
-# Initialize classifier
-try:
-    classifier = ImageClassifier()
-except Exception as e:
-    logger.critical(f"Failed to initialize classifier: {e}")
-    # We allow app startup but endpoints might fail, or we could exit.
-    raise RuntimeError("Classifier failed to start") from e
+app = FastAPI(title="SnapClass: Offline Few-Shot Classifier", lifespan=lifespan)
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -88,7 +99,9 @@ async def add_reference(label: str = Form(...), file: UploadFile = File(...)):
         label_dir = os.path.join(classifier.references_dir, safe_label)
         os.makedirs(label_dir, exist_ok=True)
         
-        file_path = os.path.join(label_dir, file.filename) # Potentially overwrite if exists
+        # Sanitize filename to prevent path traversal
+        safe_filename = os.path.basename(file.filename)
+        file_path = os.path.join(label_dir, safe_filename) # Potentially overwrite if exists
         
         def save_upload_file(src, dest):
             with open(dest, "wb") as buffer:
