@@ -43,8 +43,6 @@ class ImageClassifier:
             
             with torch.no_grad():
                 # For ResNet18 with Identity fc:
-                # The output of avgpool is flattened and passed to fc (Identity)
-                # We want the output of the model which is [1, 512]
                 x = self.model(image_tensor)
                 
                 # Normalize embedding for cosine similarity to work best
@@ -69,7 +67,6 @@ class ImageClassifier:
             embeddings.append(emb)
             
             # 2. Augmented versions
-            # We'll generate a few variations to cover different "views" or conditions
             for _ in range(2): # Repeat random transforms a few times
                 for t in augment_transforms:
                     aug_img = t(original_image)
@@ -132,7 +129,6 @@ class ImageClassifier:
                     
                     if embeddings:
                         # Store as a matrix [N, 512] for legacy/metadata access
-                        # embeddings is a list of tensors [1, 512], so cat makes it [N, 512]
                         self.reference_embeddings[label] = torch.cat(embeddings)
                         
                         all_embeddings_list.extend(embeddings)
@@ -171,8 +167,6 @@ class ImageClassifier:
     def classify(self, image: Image.Image, threshold: float = 0.5):
         # Optimization: Vectorized search O(1) Python overhead vs O(N) previously
         
-        # Lowered threshold to 0.5 for better recall with ResNet18 embeddings
-        
         # Multi-scale inference
         scales = [1.0, 0.8, 1.2]
         
@@ -181,10 +175,6 @@ class ImageClassifier:
         final_matches_map = {} # label -> max_score
 
         # Snapshot references to avoid holding lock during heavy computation
-        # For vectorized search, we just need the matrix and labels list.
-        # These are atomic replacements in load_references, so effectively thread-safe read is likely fine,
-        # but lock ensures we don't read during a half-update (though unlikely with atomic assign).
-        # We'll clone the tensor reference effectively.
         with self._lock:
             if self.search_matrix is None:
                 logger.warning("Classification attempted with no references loaded.")

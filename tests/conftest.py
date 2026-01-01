@@ -27,13 +27,10 @@ def api_client(temp_references_dir):
     from main import app
     # We need to import the global classifier variable, but it's None until startup.
     # However, TestClient(app) triggers startup. 
-    # But because we need to patch the classifier's dir *after* startup but *before* tests (or simpler: patch it on the instance),
-    # let's modify the flow.
 
     with TestClient(app) as client:
         # Import inside to get the updated reference if needed, 
         # but 'from main import classifier' imports the name at that moment (which is None).
-        # We need to access it from the module namespace dynamically or after startup.
         import main
         
         if main.classifier is None:

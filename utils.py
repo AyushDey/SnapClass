@@ -47,9 +47,7 @@ def intercept_uvicorn_logs():
         logger.handlers = []
         logger.propagate = False # Prevent double logging if root logger captures it
         
-        # Add our handlers (Console + File)
-        # Note: In a real heavy-load prod, you might separate access logs, 
-        # but for this scale, unified is better for debugging.
+        # Add handlers (Console + File)
         
         # Console
         console = logging.StreamHandler(sys.stdout)

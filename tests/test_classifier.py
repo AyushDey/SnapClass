@@ -33,7 +33,6 @@ class TestImageClassifier:
         
         # Note: Embedding size 512, simplifying for test logic if possible, 
         # but function expects shapes to match. 
-        # We'll use 512 dims but simple vectors.
         dim = 512
         matrix = torch.zeros(3, dim)
         matrix[0, 0] = 1.0 # Vector A
@@ -64,7 +63,6 @@ class TestImageClassifier:
         # Inject fake reference
         with classifier._lock:
             # Create a fake reference embedding identical to mock_image's embedding
-            # This ensures a perfect match logic test without file I/O
             target_emb = classifier.get_embedding(mock_image)
             
             # Add noise to make a second class
@@ -77,6 +75,5 @@ class TestImageClassifier:
         result = classifier.classify(mock_image, threshold=0.5)
         
         assert result["class"] == "target_class"
-        # Since we excluded the winner from matches in previous step, check that:
         assert len(result["matches"]) == 1
         assert result["matches"][0]["class"] == "noise_class"

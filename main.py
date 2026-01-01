@@ -29,11 +29,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.critical(f"Failed to initialize classifier: {e}")
         # We allow app startup but endpoints might fail, or we could exit.
-        # Ideally, if core dependency fails, we should probably crash or health check should fail.
     
     yield
     
-    # Shutdown logic (if any)
     logger.info("Application shutdown.")
 
 app = FastAPI(title="SnapClass: Offline Few-Shot Classifier", lifespan=lifespan)
@@ -56,7 +54,8 @@ async def log_requests(request: Request, call_next):
 @app.post("/classify")
 async def classify_image(file: UploadFile = File(...)):
     if not validate_image_file(file.filename):
-        logger.warning(f"Rejected classification request for file: {file.filename}")
+        safe_filename = file.filename.replace('\n', '_').replace('\r', '_')
+        logger.warning(f"Rejected classification request for file: {safe_filename}")
         raise HTTPException(status_code=400, detail="Invalid file type. Allowed: jpg, jpeg, png, webp, bmp")
 
     try:
@@ -65,7 +64,8 @@ async def classify_image(file: UploadFile = File(...)):
         result = classifier.classify(image)
         return result
     except UnidentifiedImageError:
-        logger.error(f"Failed to identify image file: {file.filename}")
+        safe_filename = file.filename.replace('\n', '_').replace('\r', '_')
+        logger.error(f"Failed to identify image file: {safe_filename}")
         raise HTTPException(status_code=400, detail="Invalid image file or content.")
     except Exception as e:
         logger.error(f"Error processing classification request: {e}")
@@ -87,7 +87,8 @@ async def refresh_references():
 async def add_reference(label: str = Form(...), file: UploadFile = File(...)):
     """Uploads a new reference image for a specific label."""
     if not validate_image_file(file.filename):
-        logger.warning(f"Rejected add_reference request for file: {file.filename}")
+        safe_filename = file.filename.replace('\n', '_').replace('\r', '_')
+        logger.warning(f"Rejected add_reference request for file: {safe_filename}")
         raise HTTPException(status_code=400, detail="Invalid file type. Allowed: jpg, jpeg, png, webp, bmp")
 
     try:
@@ -109,7 +110,8 @@ async def add_reference(label: str = Form(...), file: UploadFile = File(...)):
         
         await run_in_threadpool(save_upload_file, file.file, file_path)
             
-        logger.info(f"Added new reference: {file.filename} to class {safe_label}")
+        safe_filename_log = file.filename.replace('\n', '_').replace('\r', '_')
+        logger.info(f"Added new reference: {safe_filename_log} to class {safe_label}")
         
         # Reload to ensure consistency
         classifier.load_references()
