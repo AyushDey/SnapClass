@@ -9,11 +9,12 @@
 - **Dynamic References**: Upload new reference images via the API to expand the classifier's knowledge base on the fly.
 - **Unknown Detection**: Automatically categorizes images as "Unknown" if they don't sufficiently match any existing reference class.
 
-## How It Works
+### How It Works
 
 1. **Embedding Generation**: The system uses `ResNet18` (pre-trained on ImageNet) to convert images into dense vector embeddings.
-2. **Similarity Matching**: When an image is submitted for classification, its embedding is compared against the stored embeddings of reference images using Cosine Similarity.
-3. **Classification**: The class with the best similarity matches is returned.
+2. **Persistent Storage (ChromaDB)**: Embeddings are stored in a local `chroma_db` (using SQLite and binary files) to allow fast startup and persistence. This means your training data survives restarts.
+3. **Similarity Matching**: When an image is submitted for classification, its embedding is compared against the stored embeddings of reference images using Cosine Similarity.
+4. **Classification**: The class with the best similarity matches is returned.
 
 ## Prerequisites
 
@@ -30,10 +31,13 @@ Run the API using the included Dockerfile.
 # Build the image
 docker build -t snapclass .
 
-# Run the container
-docker run -p 8000:8000 snapclass
+# Run the container (mounting volumes for persistence)
+docker run -p 8000:8000 \
+  -v $(pwd)/references:/app/references \
+  -v $(pwd)/chroma_db:/app/chroma_db \
+  snapclass
 ```
-The API is now running at `http://localhost:8000`.
+The API is now running at `http://localhost:8000`. Reference images and the vector database are persisted on the host.
 
 ### Method 2: Local Setup
 
@@ -49,10 +53,10 @@ The API is now running at `http://localhost:8000`.
    ```bash
    uv sync
    ```
-
+   
    Using standard `pip`:
    ```bash
-   pip install fastapi uvicorn torch torchvision pillow requests numpy python-multipart
+   pip install "chromadb>=0.4.0" "fastapi" "uvicorn" "torch" "torchvision" "pillow" "requests" "numpy" "python-multipart"
    ```
 
 ## Running the Application
@@ -60,10 +64,10 @@ The API is now running at `http://localhost:8000`.
 Start the FastAPI server:
 
 ```bash
-# Using uv
-uv run fastapi dev main.py
+# Using uv (Recommended)
+uv run uvicorn main:app --reload
 
-# Or using uvicorn directly
+# Or using uvicorn directly (if installed in system python)
 uvicorn main:app --reload
 ```
 

@@ -6,9 +6,9 @@ from classifier import ImageClassifier
 class TestImageClassifier:
     
     @pytest.fixture
-    def classifier(self, temp_references_dir):
-        # Initialize with temp dir
-        return ImageClassifier(references_dir=temp_references_dir)
+    def classifier(self, temp_references_dir, temp_chroma_dir):
+        # Initialize with temp dir for refs and chroma
+        return ImageClassifier(references_dir=temp_references_dir, chroma_db_path=temp_chroma_dir)
 
     def test_initialization(self, classifier):
         assert classifier.model is not None
@@ -50,13 +50,13 @@ class TestImageClassifier:
         
         top_score, top_idx = matches[0]
         assert top_idx == 0
-        assert pytest.approx(top_score, 0.001) == 1.0
+        assert top_score == pytest.approx(1.0, abs=0.001)
 
     def test_classify_no_references(self, classifier, mock_image):
         # Should handle graceful failure
         result = classifier.classify(mock_image)
         assert result["class"] == "Unknown"
-        assert result["confidence"] == 0.0
+        assert result["confidence"] == pytest.approx(0.0)
         assert result["message"] == "No references available"
 
     def test_classify_flow(self, classifier, mock_image):

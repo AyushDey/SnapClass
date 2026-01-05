@@ -29,6 +29,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy source code (explicit listing to avoid accidental inclusion of sensitive files)
 COPY main.py classifier.py utils.py ./
 
+# Expose volumes for persistence
+VOLUME ["/app/references", "/app/chroma_db"]
+
 # Run application
 # Host 0.0.0.0 is crucial for Docker networking
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -6,13 +6,16 @@ import os
 import torch.nn.functional as F
 import torch.nn as nn
 import threading
+import hashlib
+import chromadb
+import numpy as np
 from utils import setup_logger
 
 # Initialize logger
 logger = setup_logger("snapclass.classifier")
 
 class ImageClassifier:
-    def __init__(self, references_dir: str = "references"):
+    def __init__(self, references_dir: str = "references", chroma_db_path: str = "./chroma_db"):
         self.device = torch.device("cpu") # Focusing on offline/minimal compute, CPU is safer default.
         logger.info(f"Initializing ImageClassifier on device: {self.device}")
         
@@ -34,8 +37,32 @@ class ImageClassifier:
         self.references_dir = references_dir
         self.reference_embeddings = {}
         self._lock = threading.Lock() # Ensure thread safety for reference updates
+
+        # Initialize ChromaDB
+        try:
+            self.chroma_client = chromadb.PersistentClient(path=chroma_db_path)
+            self.collection = self.chroma_client.get_or_create_collection(
+                name="reference_embeddings",
+                metadata={"hnsw:space": "cosine"} # Use cosine similarity
+            )
+            logger.info(f"Connected to ChromaDB at {chroma_db_path}")
+        except Exception as e:
+            logger.critical(f"Failed to initialize ChromaDB: {e}")
+            raise e
         
         self.load_references()
+
+    def _compute_image_hash(self, file_path: str) -> str:
+        """Compute SHA256 hash of the image file to detect changes/duplicates."""
+        sha256 = hashlib.sha256()
+        try:
+            with open(file_path, "rb") as f:
+                while chunk := f.read(8192):
+                    sha256.update(chunk)
+            return sha256.hexdigest()
+        except Exception as e:
+            logger.error(f"Error computing hash for {file_path}: {e}")
+            return ""
 
     def get_embedding(self, image: Image.Image):
         try:
@@ -97,51 +124,148 @@ class ImageClassifier:
                 
         return label_embeddings
 
+    def _scan_disk_references(self) -> dict:
+        """
+        Scans the references directory and returns a map of {file_hash: (file_path, label)}.
+        """
+        active_files_map = {}
+        
+        if not os.path.exists(self.references_dir):
+            logger.warning(f"References directory '{self.references_dir}' does not exist. Creating it.")
+            os.makedirs(self.references_dir)
+            return active_files_map
+
+        for label in os.listdir(self.references_dir):
+            label_dir = os.path.join(self.references_dir, label)
+            if not os.path.isdir(label_dir):
+                continue
+
+            for img_file in os.listdir(label_dir):
+                if not img_file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp')):
+                    continue
+                    
+                img_path = os.path.join(label_dir, img_file)
+                file_hash = self._compute_image_hash(img_path)
+                
+                if file_hash:
+                    active_files_map[file_hash] = {"path": img_path, "label": label}
+                    
+        return active_files_map
+
+    def _sync_new_files_to_db(self, active_files_map: dict) -> int:
+        """
+        Checks if active files are in DB, adds them if missing.
+        Returns the count of new embeddings added.
+        """
+        new_embeddings_count = 0
+        
+        # Augmentation transforms for robustness
+        augment_transforms = [
+            transforms.RandomHorizontalFlip(p=1.0),
+            transforms.RandomRotation(degrees=15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            transforms.ColorJitter(saturation=0.2)
+        ]
+
+        for file_hash, info in active_files_map.items():
+            # Check if this file revision is already in DB
+            existing = self.collection.get(
+                ids=[f"{file_hash}_0"],
+                include=[] 
+            )
+            
+            if len(existing['ids']) == 0:
+                # Missing in DB, compute and add
+                img_path = info["path"]
+                label = info["label"]
+                
+                emb_list = self._process_image(img_path, augment_transforms)
+                
+                if emb_list:
+                    ids = [f"{file_hash}_{i}" for i in range(len(emb_list))]
+                    # Convert tensor embeddings to list of floats for Chroma
+                    embeddings_data = [e.cpu().tolist()[0] for e in emb_list]
+                    metadatas = [{"label": label, "file_path": img_path, "hash": file_hash, "type": "original" if i==0 else "augmented"} for i in range(len(emb_list))]
+                    
+                    self.collection.add(
+                        ids=ids,
+                        embeddings=embeddings_data,
+                        metadatas=metadatas
+                    )
+                    new_embeddings_count += len(emb_list)
+                    logger.info(f"Computed and stored {len(emb_list)} embeddings for new/modified file: {os.path.basename(img_path)}")
+        
+        return new_embeddings_count
+
+    def _cleanup_and_load_from_db(self, active_hashes: set) -> int:
+        """
+        Removes stale entries from DB and loads all valid embeddings into memory.
+        Returns the count of restored (loaded) embeddings.
+        """
+        all_data = self.collection.get(include=['metadatas', 'embeddings'])
+        
+        if not all_data['ids']:
+             logger.info("No data in ChromeDB.")
+             return 0
+
+        ids_to_delete = []
+        loaded_embeddings = []
+        loaded_labels = []
+        
+        for i, metadata in enumerate(all_data['metadatas']):
+            if metadata['hash'] not in active_hashes:
+                ids_to_delete.append(all_data['ids'][i])
+            else:
+                # Load into memory
+                loaded_embeddings.append(all_data['embeddings'][i])
+                loaded_labels.append(metadata['label'])
+        
+        if ids_to_delete:
+            self.collection.delete(ids=ids_to_delete)
+            logger.info(f"Deleted {len(ids_to_delete)} stale embeddings from DB.")
+        
+        if not loaded_embeddings:
+            logger.info("No references available in DB after cleanup.")
+            return 0
+            
+        # Convert back to Tensor [N, 512]
+        self.search_matrix = torch.tensor(np.array(loaded_embeddings), dtype=torch.float32).to(self.device).detach()
+        # Ensure normalization
+        self.search_matrix = F.normalize(self.search_matrix, p=2, dim=1) 
+        self.search_labels = loaded_labels
+        
+        # Reconstruct legacy reference_embeddings map for API/Debug
+        label_indices = {}
+        for idx, lbl in enumerate(loaded_labels):
+            if lbl not in label_indices:
+                label_indices[lbl] = []
+            label_indices[lbl].append(idx)
+            
+        for lbl, indices in label_indices.items():
+            self.reference_embeddings[lbl] = self.search_matrix[indices]
+
+        return len(loaded_embeddings)
+
     def load_references(self):
         with self._lock:
-            logger.info("Loading references with augmentation...")
+            logger.info("Syncing references with ChromaDB...")
             self.reference_embeddings = {}
             self.search_matrix = None
             self.search_labels = []
 
-            if not os.path.exists(self.references_dir):
-                logger.warning(f"References directory '{self.references_dir}' does not exist. Creating it.")
-                os.makedirs(self.references_dir)
-                return
+            # 1. Scan disk
+            active_files_map = self._scan_disk_references()
+            active_hashes = set(active_files_map.keys())
 
-            # Augmentation transforms for robustness
-            augment_transforms = [
-                transforms.RandomHorizontalFlip(p=1.0),
-                transforms.RandomRotation(degrees=15),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2),
-                transforms.ColorJitter(saturation=0.2)
-            ]
+            # 2. Sync to DB
+            new_embeddings_count = self._sync_new_files_to_db(active_files_map)
 
-            all_embeddings_list = []
-            all_labels_list = []
+            # 3. Cleanup and Load
+            restored_embeddings_count = self._cleanup_and_load_from_db(active_hashes)
 
-            count = 0
-            for label in os.listdir(self.references_dir):
-                label_dir = os.path.join(self.references_dir, label)
-                if os.path.isdir(label_dir):
-                    # Process the directory for this label
-                    embeddings = self._process_label_directory(label_dir, label, augment_transforms)
-                    
-                    if embeddings:
-                        # Store as a matrix [N, 512] for legacy/metadata access
-                        self.reference_embeddings[label] = torch.cat(embeddings)
-                        
-                        all_embeddings_list.extend(embeddings)
-                        all_labels_list.extend([label] * len(embeddings))
-                        count += 1
-            
-            # Build global search matrix
-            if all_embeddings_list:
-                self.search_matrix = torch.cat(all_embeddings_list) # [Total_N, 512]
-                self.search_labels = all_labels_list
-                logger.info(f"Loaded references for {count} classes. Total embeddings: {len(self.search_labels)}")
-            else:
-                logger.info("No references loaded.")
+            if restored_embeddings_count > 0:
+                unique_labels = set(self.search_labels)
+                logger.info(f"Loaded references for {len(unique_labels)} classes. Total embeddings: {len(self.search_labels)} (New: {new_embeddings_count}, Cached: {restored_embeddings_count - new_embeddings_count})")
 
     def _get_scaled_embedding(self, image: Image.Image, scale: float):
         """Helper to resize image if needed and get embedding."""

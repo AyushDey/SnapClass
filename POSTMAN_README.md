@@ -9,7 +9,7 @@ This guide will help you test the endpoints of the SnapClass API using Postman.
     ```bash
     uvicorn main:app --reload
     # Or with Docker:
-    docker run -p 8000:8000 snapclass
+    docker run -p 8000:8000 -v $(pwd)/references:/app/references -v $(pwd)/chroma_db:/app/chroma_db snapclass
     ```
     Default URL: `http://127.0.0.1:8000`
 
