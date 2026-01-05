@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
         classifier = ImageClassifier()
         logger.info("Classifier initialized successfully.")
     except Exception as e:
-        logger.critical(f"Failed to initialize classifier: {e}")
+        logger.critical("Failed to initialize classifier: %s", e)
         # We allow app startup but endpoints might fail, or we could exit.
     
     yield
@@ -45,17 +45,18 @@ def validate_image_file(filename: str):
     return True
 
 @app.middleware("http")
+@app.middleware("http")
 async def log_requests(request: Request, call_next):
-    logger.info(f"Incoming request: {request.method} {request.url}")
+    logger.info("Incoming request: %s %s", request.method, request.url)
     response = await call_next(request)
-    logger.info(f"Response status: {response.status_code}")
+    logger.info("Response status: %s", response.status_code)
     return response
 
 @app.post("/classify")
 async def classify_image(file: UploadFile = File(...)):
     if not validate_image_file(file.filename):
         safe_filename = file.filename.replace('\n', '_').replace('\r', '_')
-        logger.warning(f"Rejected classification request for file: {safe_filename}")
+        logger.warning("Rejected classification request for file: %s", safe_filename)
         raise HTTPException(status_code=400, detail="Invalid file type. Allowed: jpg, jpeg, png, webp, bmp")
 
     try:
@@ -65,10 +66,10 @@ async def classify_image(file: UploadFile = File(...)):
         return result
     except UnidentifiedImageError:
         safe_filename = file.filename.replace('\n', '_').replace('\r', '_')
-        logger.error(f"Failed to identify image file: {safe_filename}")
+        logger.error("Failed to identify image file: %s", safe_filename)
         raise HTTPException(status_code=400, detail="Invalid image file or content.")
     except Exception as e:
-        logger.error(f"Error processing classification request: {e}")
+        logger.error("Error processing classification request: %s", e)
         return JSONResponse(status_code=500, content={"error": "Internal server error processing image."})
 
 @app.post("/refresh")
@@ -76,11 +77,12 @@ async def refresh_references():
     """Reloads the reference images from disk."""
     try:
         classifier.load_references()
+        classifier.load_references()
         classes = list(classifier.reference_embeddings.keys())
-        logger.info(f"References refreshed. Classes: {classes}")
+        logger.info("References refreshed. Classes: %s", classes)
         return {"message": "References reloaded", "classes": classes}
     except Exception as e:
-        logger.error(f"Error refreshing references: {e}")
+        logger.error("Error refreshing references: %s", e)
         return JSONResponse(status_code=500, content={"error": "Failed to refresh references."})
 
 @app.post("/add_reference")
@@ -88,7 +90,7 @@ async def add_reference(label: str = Form(...), file: UploadFile = File(...)):
     """Uploads a new reference image for a specific label."""
     if not validate_image_file(file.filename):
         safe_filename = file.filename.replace('\n', '_').replace('\r', '_')
-        logger.warning(f"Rejected add_reference request for file: {safe_filename}")
+        logger.warning("Rejected add_reference request for file: %s", safe_filename)
         raise HTTPException(status_code=400, detail="Invalid file type. Allowed: jpg, jpeg, png, webp, bmp")
 
     try:
@@ -111,14 +113,14 @@ async def add_reference(label: str = Form(...), file: UploadFile = File(...)):
         await run_in_threadpool(save_upload_file, file.file, file_path)
             
         safe_filename_log = file.filename.replace('\n', '_').replace('\r', '_')
-        logger.info(f"Added new reference: {safe_filename_log} to class {safe_label}")
+        logger.info("Added new reference: %s to class %s", safe_filename_log, safe_label)
         
         # Reload to ensure consistency
         classifier.load_references()
         
         return {"message": f"Added reference for '{safe_label}'", "filename": file.filename}
     except Exception as e:
-        logger.error(f"Error adding reference: {e}")
+        logger.error("Error adding reference: %s", e)
         return JSONResponse(status_code=500, content={"error": f"Failed to add reference: {str(e)}"})
 
 @app.get("/")
