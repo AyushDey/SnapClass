@@ -1,134 +1,122 @@
 {
-	"info": {
-		"_postman_id": "api-classification-collection",
-		"name": "SnapClass API",
-		"description": "Collection for testing the SnapClass Offline Few-Shot Classifier API.",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-	},
-	"item": [
-		{
-			"name": "Check Health",
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/",
-					"host": [
-						"{{base_url}}"
-					],
-					"path": [
-						""
-					]
-				}
-			},
-			"response": []
-		},
-		{
-			"name": "Classify Image",
-			"request": {
-				"method": "POST",
-				"header": [],
-				"body": {
-					"mode": "formdata",
-					"formdata": [
-						{
-							"key": "file",
-							"type": "file",
-							"description": "Image file to classify"
-						}
-					]
-				},
-				"url": {
-					"raw": "{{base_url}}/classify",
-					"host": [
-						"{{base_url}}"
-					],
-					"path": [
-						"classify"
-					]
-				},
-				"description": "Upload an image to get its classification based on reference images."
-			},
-			"response": []
-		},
-		{
-			"name": "Add Reference Image",
-			"request": {
-				"method": "POST",
-				"header": [],
-				"body": {
-					"mode": "formdata",
-					"formdata": [
-						{
-							"key": "label",
-							"value": "binoculars",
-							"type": "text",
-							"description": "Label for the reference image"
-						},
-						{
-							"key": "file",
-							"type": "file",
-							"description": "Reference image file"
-						}
-					]
-				},
-				"url": {
-					"raw": "{{base_url}}/add_reference",
-					"host": [
-						"{{base_url}}"
-					],
-					"path": [
-						"add_reference"
-					]
-				},
-				"description": "Upload a new reference image for a specific label."
-			},
-			"response": []
-		},
-		{
-			"name": "Refresh References",
-			"request": {
-				"method": "POST",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/refresh",
-					"host": [
-						"{{base_url}}"
-					],
-					"path": [
-						"refresh"
-					]
-				},
-				"description": "Reloads reference images from disk."
-			},
-			"response": []
-		}
-	],
-	"event": [
-		{
-			"listen": "prerequest",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					""
-				]
-			}
-		},
-		{
-			"listen": "test",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					""
-				]
-			}
-		}
-	],
-	"variable": [
-		{
-			"key": "base_url",
-			"value": "http://127.0.0.1:8000",
-			"type": "string"
-		}
-	]
+  "info": {
+    "_postman_id": "api-classification-collection",
+    "name": "SnapClass API",
+    "description": "Collection for testing the SnapClass Offline Few-Shot Classifier API.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Check Health",
+      "id": "bd6a8760-b816-4472-82e2-7d54e57b1533",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            ""
+          ]
+        },
+        "description": "## Health Check Endpoint\n\n### Overview\nThis endpoint provides a simple health check to verify that the SnapClass API is running and accessible. It returns the operational status of the service.\n\n### Purpose and Use Case\n- **API Availability Monitoring**: Quickly verify that the API server is up and responding to requests\n- **Service Health Verification**: Confirm that the application is running properly and ready to handle requests\n- **Integration Testing**: Use as a preliminary check before executing more complex API operations\n- **Load Balancer Health Checks**: Ideal for automated health checks by load balancers and orchestration tools\n- **Uptime Monitoring**: Can be used by monitoring services to track API availability and uptime\n\n### Expected Response Format\nThe endpoint typically returns a simple JSON response indicating the service status:\n```json\n{\n  \"status\": \"healthy\",\n  \"message\": \"API is running\"\n}\n```\n\n### Common Use Cases\n1. **Continuous Monitoring**: Set up automated monitoring tools to ping this endpoint at regular intervals\n2. **Pre-deployment Verification**: Check API health after deployment to ensure successful startup\n3. **Load Balancer Configuration**: Configure load balancers to use this endpoint for health checks\n4. **Debugging**: Quick way to verify basic connectivity and API responsiveness\n5. **Status Dashboards**: Integrate with status page services to display real-time API availability\n\n### Notes\n- This is a lightweight endpoint with minimal processing overhead\n- No authentication is typically required for health check endpoints\n- Should return a 200 OK status code when the service is healthy\n- Fast response time is expected (typically under 100ms)\n- Does not perform deep system checks (database connectivity, external dependencies, etc.)"
+      },
+      "response": []
+    },
+    {
+      "name": "Classify Image",
+      "id": "8e9b3533-659b-4d92-8932-3aedc3f4c4c2",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "description": "Image file to classify",
+              "src": []
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/classify",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "classify"
+          ]
+        },
+        "description": "# Classify Image\n\n## Overview\n\nThis endpoint performs image classification by analyzing an uploaded image against a set of reference images. It uses machine learning to identify and categorize the content of the image, returning classification results based on trained models or reference data.\n\n## Request Details\n\n### HTTP Method\n\n`POST`\n\n### Endpoint\n\n```\n{{base_url}}/classify\n\n ```\n\n### Content Type\n\nThis endpoint accepts `multipart/form-data` requests, which allows for binary file uploads.\n\n## Parameters\n\n### Body Parameters (form-data)\n\n| Parameter | Type | Required | Description |\n| --- | --- | --- | --- |\n| `file` | File | Yes | The image file to be classified. Supported formats typically include JPEG, PNG, GIF, and other common image formats. |\n\n## Request Example\n\nTo use this endpoint, send a POST request with the image file attached as form-data:\n\n```\nPOST {{base_url}}/classify\nContent-Type: multipart/form-data\nfile: [binary image data]\n\n ```\n\n## Response Format\n\nThe API returns a JSON response containing classification results. A typical response includes:\n\n``` json\n{\n  \"classification\": \"category_name\",\n  \"confidence\": 0.95,\n  \"predictions\": [\n    {\n      \"label\": \"category_1\",\n      \"probability\": 0.95\n    },\n    {\n      \"label\": \"category_2\",\n      \"probability\": 0.03\n    }\n  ],\n  \"status\": \"success\"\n}\n\n ```\n\n### Response Fields\n\n- **classification**: The primary classification label assigned to the image\n    \n- **confidence**: Confidence score (0-1) indicating the model's certainty\n    \n- **predictions**: Array of possible classifications with their probabilities\n    \n- **status**: Request processing status\n    \n\n## Usage Scenario\n\n**Example Use Case**: An e-commerce platform wants to automatically categorize product images uploaded by sellers.\n\n1. Seller uploads a product image through the platform\n    \n2. The image is sent to this endpoint via multipart/form-data\n    \n3. The API analyzes the image against reference categories (e.g., \"electronics\", \"clothing\", \"furniture\")\n    \n4. The API returns the classification with confidence scores\n    \n5. The platform automatically tags the product with the appropriate category\n    \n\n## Notes\n\n- **Image Quality**: Higher resolution images generally produce more accurate classifications\n    \n- **File Size**: Check API limits for maximum file size (typically 5-10 MB)\n    \n- **Processing Time**: Classification time varies based on image size and complexity\n    \n- **Reference Images**: The classification accuracy depends on the quality and diversity of reference images used to train the model\n    \n- **Supported Formats**: Ensure your image is in a supported format (JPEG, PNG recommended)\n    \n- **Authentication**: Make sure to include proper authentication headers if required by the API"
+      },
+      "response": []
+    },
+    {
+      "name": "Add Reference Image",
+      "id": "c244e0e0-3d2b-4c42-9bd9-b9842d5469fb",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "label",
+              "value": "binoculars",
+              "type": "text",
+              "description": "Label for the reference image"
+            },
+            {
+              "key": "file",
+              "type": "file",
+              "description": "Reference image file",
+              "src": []
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/add_reference",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "add_reference"
+          ]
+        },
+        "description": "# Add Reference Image\n\n## Overview\n\nThis endpoint allows you to upload a new reference image for a specific classification label. The uploaded image will be used by the SnapClass API to train and improve its image classification capabilities for the specified label.\n\n## Endpoint Details\n\n- **Method:** `POST`\n    \n- **Path:** `{{base_url}}/add_reference`\n    \n- **Content-Type:** `multipart/form-data`\n    \n\n## Parameters\n\n### Form-Data Fields\n\n| Field | Type | Required | Description |\n| --- | --- | --- | --- |\n| `label` | string | Yes | The classification label to associate with this reference image. This label will be used to categorize and identify similar images in future classification requests. |\n| `file` | file | Yes | The image file to upload as a reference. This should be a valid image file that represents the label category. |\n\n## Example Usage\n\nBash\n\n```\ncurl --location '{{base_url}}/add_reference' \\--form 'label=\"binoculars\"' \\--form 'file=@\"/path/to/your/image.jpg\"'\n\n ```\n\n### Example Labels\n\nCommon label values include:\n\n- `binoculars`\n    \n- `console_table`\n    \n- `rope`\n    \n\n## Response Codes\n\n| Status Code | Description |\n| --- | --- |\n| 200 OK | Reference image successfully uploaded and added |\n| 201 Created | Reference image successfully created for the label |\n| 400 Bad Request | Malformed request or missing required fields |\n| 401 Unauthorized | Authentication required |\n| 403 Forbidden | Insufficient permissions |\n| 413 Payload Too Large | Image file exceeds maximum size |\n| 415 Unsupported Media Type | Unsupported image format |\n| 500 Internal Server Error | Server error |\n| 503 Service Unavailable | Service temporarily unavailable |\n\n## Notes\n\n- Ensure the uploaded file is a valid image format (JPEG, PNG, etc.)\n    \n- The label field should not be empty\n    \n- Consider compressing large images before uploading to avoid 413 errors"
+      },
+      "response": []
+    },
+    {
+      "name": "Refresh References",
+      "id": "45e92833-cade-454e-8e63-7af48e99d1b6",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/refresh",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "refresh"
+          ]
+        },
+        "description": "# Refresh References\n\n## Overview\n\nThis endpoint reloads all reference images from disk into the SnapClass API's memory. It scans the configured reference image directory and updates the internal cache with any new, modified, or removed reference images.\n\n## Response Codes\n\n| Status Code | Description |\n| --- | --- |\n| **200 OK** | Reference images successfully reloaded. The API has scanned the directory and updated its internal cache with the current set of reference images. |\n| **400 Bad Request** | The request was malformed or contains invalid parameters. Check the request format and try again. |\n| **401 Unauthorized** | Authentication credentials are missing or invalid. Ensure you have provided valid authentication tokens or API keys. |\n| **403 Forbidden** | The authenticated user does not have sufficient permissions to refresh reference images. This operation may require administrative privileges. |\n| **404 Not Found** | The reference image directory could not be found or is not properly configured on the server. |\n| **500 Internal Server Error** | An unexpected error occurred while processing the refresh operation. This could be due to file system errors, memory issues, or internal processing failures. |\n| **503 Service Unavailable** | The service is temporarily unavailable or overloaded. The reference refresh operation cannot be completed at this time. Try again later. |\n\n## When to Use This Endpoint\n\nUse this endpoint when:\n\n- New reference images have been added to the reference directory\n    \n- Existing reference images have been updated or modified\n    \n- Reference images have been removed and you want the API to reflect these changes\n    \n- You need to ensure the classification system is using the most current set of reference images\n    \n- After bulk updates to the reference image library\n    \n\n## Expected Behavior\n\nWhen called successfully, the endpoint will:\n\n1. Scan the reference image directory on the server\n    \n2. Load all valid image files into memory\n    \n3. Update the classification model with the new reference set\n    \n4. Return a confirmation response\n    \n\n**Response:** The API will return a success status indicating that the reference images have been reloaded.\n\n## Prerequisites\n\n- The reference image directory must be properly configured on the server\n    \n- Reference images must be in supported formats (typically JPEG, PNG)\n    \n- Sufficient server memory to load all reference images\n    \n- Appropriate file system permissions for the API to read the reference directory\n    \n\n## Example Use Cases\n\n### Use Case 1: Adding New Product Categories\n\nAfter adding new product images to the reference library, call this endpoint to make them available for classification without restarting the service.\n\n### Use Case 2: Updating Reference Images\n\nWhen reference images are updated with higher quality versions or different angles, refresh the cache to ensure classifications use the latest images.\n\n### Use Case 3: Maintenance Operations\n\nAs part of regular maintenance, refresh references to ensure the system is synchronized with the file system and no stale data is being used.\n\n### Use Case 4: Troubleshooting\n\nIf classifications seem incorrect or outdated, refresh the references to rule out stale cache data as the cause."
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "id": "4c414ebf-ddfc-4e8a-953c-43fb57863631",
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    }
+  ]
 }
