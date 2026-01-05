@@ -106,6 +106,13 @@ async def add_reference(label: str = Form(...), file: UploadFile = File(...)):
         safe_filename = os.path.basename(file.filename)
         file_path = os.path.join(label_dir, safe_filename) # Potentially overwrite if exists
         
+        # Verify that the path is strictly within the references directory
+        base_dir = os.path.abspath(classifier.references_dir)
+        target_path = os.path.abspath(file_path)
+        if os.path.commonpath([base_dir, target_path]) != base_dir:
+            logger.warning("Path traversal attempt detected: %s", file_path)
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        
         def save_upload_file(src, dest):
             with open(dest, "wb") as buffer:
                 shutil.copyfileobj(src, buffer)
