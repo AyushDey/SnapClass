@@ -27,7 +27,7 @@ RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy source code (explicit listing to avoid accidental inclusion of sensitive files)
-COPY main.py classifier.py utils.py ./
+COPY main.py classifier.py db.py db_actions.py models.py utils.py ./
 
 # Expose volumes for persistence
 VOLUME ["/app/references"]

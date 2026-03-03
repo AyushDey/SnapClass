@@ -2,7 +2,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert
 from models import BookletItem, BookletCategory
-from db import sessionLocal
 
 class DBActions:
     """Encapsulates all database interactions for the classifier."""
@@ -27,7 +26,7 @@ class DBActions:
             
         new_category = BookletCategory(category_name=category_name)
         self.session.add(new_category)
-        self.session.commit() # Commit to populate the new ID immediately
+        self.session.flush() # Flush to populate the new ID immediately
         return new_category.id
 
     def insert_items(self, items: list):
@@ -37,7 +36,6 @@ class DBActions:
         stmt = insert(BookletItem).values(items)
         stmt = stmt.on_conflict_do_nothing(index_elements=['image_hash'])
         self.session.execute(stmt)
-        self.session.commit()
 
     def get_all_items(self):
         """Fetch all booklet items."""
@@ -49,11 +47,9 @@ class DBActions:
         if not item_ids:
             return
         self.session.execute(delete(BookletItem).where(BookletItem.id.in_(item_ids)))
-        self.session.commit()
 
     def commit(self):
-        if self.session.new or self.session.dirty:
-            self.session.commit()
+        self.session.commit()
 
     def get_category_by_id(self, category_id: int) -> str:
         """

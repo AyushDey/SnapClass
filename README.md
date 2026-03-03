@@ -19,6 +19,7 @@
 ## Prerequisites
 
 - Python 3.13+
+- PostgreSQL 14+ with the [`pgvector` extension](https://github.com/pgvector/pgvector) installed
 - Dependencies as listed in `pyproject.toml` (managed by `uv` or `pip`).
 
 ## Installation
@@ -59,7 +60,21 @@ The API is now running at `http://localhost:8000`. Reference images and the vect
    pip install "fastapi" "uvicorn" "torch" "torchvision" "pillow" "requests" "numpy" "python-multipart" "psycopg[binary]" "pgvector" "sqlalchemy"
    ```
 
-3. **Configure Database**: Create a `.env` file in the root directory based on `.env.example` with your PostgreSQL connection details.
+3. **Configure Database**: Create a `.env` file in the root directory based on `.env.template` with your PostgreSQL connection details:
+   ```
+   DB_HOST=localhost
+   DB_PORT=5432
+   DB_USER=your_user
+   DB_PASSWORD=your_password
+   DB_NAME=snapclass
+   ```
+   > **SSL (Remote Hosts):** If `DB_HOST` is anything other than `localhost` / `127.0.0.1`, the engine automatically enables SSL (`sslmode=verify-ca`). Place your certificate files in a `certs/` directory in the project root:
+   > ```
+   > certs/
+   > ├── server-ca.pem
+   > ├── client-cert.pem
+   > └── client-key.pk8
+   > ```
 
 ## Running the Application
 
@@ -84,59 +99,72 @@ The API will be accessible at `http://127.0.0.1:8000`.
 ### 2. Add a Reference Image
 **POST /add_reference**
 - **Form Fields**:
-  - `label` (string): The name of the class (e.g., "binoculars", "rope"). **Note:** Spaces in labels will be automatically replaced with underscores (e.g., "blue sky" -> "blue_sky").
-  - `file` (file): The reference image.
+  - `label` (string, required): The name of the class (e.g., "binoculars", "rope"). Spaces are automatically replaced with underscores (e.g., "blue sky" → "blue_sky").
+  - `category` (string, optional): A grouping category for the label (e.g., "Tools", "Furniture"). Defaults to `"Uncategorized"` if not provided.
+  - `file` (file): The reference image. Allowed formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`.
 
 Example (Python):
 ```python
 import requests
 requests.post("http://127.0.0.1:8000/add_reference", 
-              data={"label": "binoculars"}, 
+              data={"label": "binoculars", "category": "Optics"}, 
               files={"file": open("binoculars_ref.jpg", "rb")})
 ```
 
 ### 3. Classify an Image
 **POST /classify**
 - **Form Fields**:
-  - `file` (file): The image to classify.
-- **Returns**: JSON object with the predicted class, confidence score, and top matches.
+  - `file` (file): The image to classify. Allowed formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`.
+- **Returns**: JSON object with the predicted class, category name, confidence score, and top matches within the same category.
 
-Example Response:
+Example Response (known class):
 ```json
 {
     "class": "binoculars",
+    "category_name": "Optics",
     "confidence": 0.92,
     "matches": [
-        {"class": "rope", "score": 0.45},
-        {"class": "flower_vase", "score": 0.12}
+        {"class": "telescope", "score": 0.45}
     ]
+}
+```
+
+Example Response (no match):
+```json
+{
+    "class": "Unknown",
+    "confidence": 0.0,
+    "message": "No references available"
 }
 ```
 
 ### 4. Bulk Upload References
 **POST /bulk_upload**
-- Upload an archive file (.zip, .tar, .tar.gz, .tar.bz2, .7z) containing folders of images. Each folder name becomes a label.
-- **Note:** Spaces in folder names will be automatically replaced with underscores (e.g., "golden retriever" -> "golden_retriever").
+- Upload an archive file (`.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tgz`) containing a nested folder structure of images.
+- Spaces in folder names are automatically replaced with underscores.
 - **Form Fields**:
-  - `file` (file): An archive with the structure below.
+  - `file` (file): An archive with the `Category/Label/` structure below.
 
-Expected ZIP structure:
+Expected archive structure (Category → Label → Images):
 ```
 references.zip
-├── cat/
-│   ├── cat1.jpg
-│   └── cat2.png
-└── dog/
-    └── dog1.jpg
+└── Furniture/
+    ├── Chair/
+    │   ├── chair1.jpg
+    │   └── chair2.png
+    └── Table/
+        └── table1.jpg
 ```
+
+> **Note:** If the archive uses only one level of nesting (just `Label/images`), the archive's filename is used as the category name. Images placed directly at the root of the archive are skipped.
 
 Example Response:
 ```json
 {
     "message": "Bulk upload successful",
     "labels": {
-        "cat": 2,
-        "dog": 1
+        "Chair": 2,
+        "Table": 1
     },
     "total_images": 3
 }
@@ -152,28 +180,47 @@ The API includes a background task that automatically scans the `references/` di
 
 ## Testing
 
-This repository includes a Postman Collection for easy testing of all endpoints.
+### Postman
+This repository includes a Postman Collection for easy manual testing of all endpoints.
 
 1. Install [Postman](https://www.postman.com/downloads/).
 2. Import `postman_collection.json`.
 3. Follow the instructions in `POSTMAN_README.md` to run the tests against your local server.
 
-## Unit Testing
+### Unit Tests & Coverage
 
-For developers, the project uses `pytest` for unit and integration testing.
+The project uses `pytest` with 100% code coverage enforced via CI.
+
+> **Note on Test Isolation:** Tests use a fully mocked database (in-memory SQLite) and mocked ResNet model — **no real PostgreSQL or GPU is needed** to run the test suite.
 
 ```bash
 # Install dev dependencies
-uv sync --dev
+uv sync --all-extras --dev
 
-# Run tests
-uv run pytest
+# Run tests with coverage report
+uv run pytest --cov=. --cov-report=term-missing
+
+# Run the CI check (enforces 100% coverage)
+uv run pytest --cov=. --cov-fail-under=100
 ```
+
+## CI/CD
+
+The project uses **GitHub Actions** (`.github/workflows/test.yml`) to automatically run the full test suite with coverage checks on every push or pull request to `main` and `feature` branches.
 
 ## Directory Structure
 
-- `main.py`: The FastAPI application entry point.
-- `classifier.py`: Contains the `ImageClassifier` logic using PyTorch and ResNet18.
-- `references/`: Directory where reference images are stored (organized by class label).
-- `postman_collection.json`: API test suite.
-- `pyproject.toml` / `uv.lock`: Project dependency management.
+```
+├── main.py              # FastAPI application entry point and route handlers
+├── classifier.py        # ImageClassifier logic (PyTorch + ResNet18)
+├── db.py                # SQLAlchemy engine and session factory
+├── db_actions.py        # Database CRUD operations (DBActions class)
+├── models.py            # SQLAlchemy ORM models (BookletItem, BookletCategory)
+├── utils.py             # Logging setup utilities
+├── tests/               # Pytest test suite (88 tests, 100% coverage)
+├── references/          # Reference images organized by Category/Label/
+├── .coveragerc          # Coverage configuration
+├── pyproject.toml       # Project metadata and dependencies
+├── uv.lock              # Locked dependency versions
+└── postman_collection.json  # Postman API test collection
+```

@@ -80,7 +80,7 @@ class ImageClassifier:
         """Classifies an image by comparing its embedding against the loaded search matrix."""
         with self._lock:
             if self.search_matrix is None:
-                return {"class": "Unknown", "message": "No references available"}
+                return {"class": "Unknown", "confidence": 0.0, "message": "No references available"}
             matrix = self.search_matrix
             labels = self.search_labels
             categories = self.search_categories
@@ -117,7 +117,7 @@ class ImageClassifier:
                     "matches": matches
                 }
             else:
-                response = {'class': 'Unknown Image', "message": "No references available"}
+                response = {'class': 'Unknown', "confidence": 0.0, "message": "No references available"}
                 
             return response
         except Exception as e:

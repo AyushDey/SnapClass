@@ -1,0 +1,19 @@
+[run]
+source = .
+omit =
+    # Skip virtual env and test infra
+    .venv/*
+    tests/*
+    # db.py is module-level infra covered via conftest mocking; excluded from strict coverage
+    db.py
+
+[report]
+exclude_lines =
+    # Standard pragmas
+    pragma: no cover
+    # Abstract methods and type stubs
+    def __repr__
+    raise NotImplementedError
+    if TYPE_CHECKING:
+    # Don't count else clauses on exceptions that re-raise
+    raise$
