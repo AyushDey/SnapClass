@@ -304,4 +304,4 @@ async def bulk_upload(file: Annotated[UploadFile, File(...)]):
         raise
     except Exception as e:
         logger.error(f"Bulk upload error: {e}")
-        return JSONResponse(status_code=500, content={"error": f"Bulk upload failed: {str(e)}"})
+        return JSONResponse(status_code=500, content={"error": "Bulk upload failed."})
