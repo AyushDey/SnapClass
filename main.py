@@ -270,7 +270,7 @@ async def add_reference(
         return {"message": f"Added reference for '{safe_label}'", "filename": file.filename, "category": safe_category}
     except Exception as e:
         logger.error(f"Error adding reference: {e}")
-        return JSONResponse(status_code=500, content={"error": f"Failed to add reference: {str(e)}"})
+        return JSONResponse(status_code=500, content={"error": "Failed to add reference."})
 
 
 @app.post("/bulk_upload", responses={400: {"description": "Unsupported archive format."}})
