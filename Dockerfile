@@ -13,10 +13,10 @@ RUN sh /uv-installer.sh && rm /uv-installer.sh
 # Ensure the installed binary is on the `PATH`
 ENV PATH="/root/.local/bin/:$PATH"
 
-WORKDIR /app
+WORKDIR /app/backend
 
 # Copy dependency definitions
-COPY pyproject.toml uv.lock ./
+COPY backend/pyproject.toml backend/uv.lock ./
 
 # Install dependencies
 # --frozen: Require uv.lock to act as the source of truth
@@ -24,10 +24,10 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Place the virtualenv in the path
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/app/backend/.venv/bin:$PATH"
 
 # Copy source code (explicit listing to avoid accidental inclusion of sensitive files)
-COPY main.py classifier.py db.py db_actions.py models.py utils.py ./
+COPY backend/main.py backend/classifier.py backend/db.py backend/db_actions.py backend/models.py backend/utils.py ./
 
 # Expose volumes for persistence
 VOLUME ["/app/references"]

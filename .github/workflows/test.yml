@@ -26,7 +26,9 @@ jobs:
         python-version: "3.13"
 
     - name: Install dependencies
+      working-directory: backend
       run: uv sync --all-extras --dev
 
     - name: Run tests with coverage
+      working-directory: backend
       run: uv run pytest --cov=. --cov-report=term-missing --cov-fail-under=100
