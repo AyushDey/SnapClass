@@ -32,3 +32,14 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = "."
 testpaths = ["tests"]
+addopts = "--cov=main --cov=classifier --cov=db_actions --cov-branch --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = ["main", "classifier", "db_actions"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

@@ -22,15 +22,19 @@ class ImageClassifier:
         self.session_factory = session_factory
         self.device = torch.device("cpu")
         self.references_dir = Path(references_dir)
-        
+
         # Search Index State
         self.reference_embeddings = {}
         self.search_matrix = None
         self.search_labels = []
         self.search_categories = []
-        
+
         self._lock = threading.Lock()
-        
+
+        # Cache of the last full disk scan so fast-path manual_updates can
+        # skip re-hashing the entire references directory.
+        self._cached_active_files: dict = {}
+
         # We apply 3 augmentations. Each is run twice -> 6 augmented + 1 original = 7 images per upload
         self._augmentations = [
             transforms.RandomHorizontalFlip(p=1.0),
@@ -175,45 +179,53 @@ class ImageClassifier:
         """
         Scans the reference directory for images.
         Returns: dict[file_hash] -> {path, label, category}
+
+        Fast-path: when *all* work is already described by manual_updates (e.g.
+        a bulk_upload that already hashed every new file), we skip the expensive
+        full-disk hash scan and merge manual_updates on top of whatever is
+        already cached in memory from the last full scan.
         """
+        # --- Fast path: manual_updates carry all new entries
+        if manual_updates:
+            active_files = self._cached_active_files.copy() if self._cached_active_files else {}
+            active_files.update(manual_updates)
+            self._cached_active_files = active_files
+            return active_files
+
+        # --- Full scan path (startup / /refresh / add_reference without batch)
         active_files = {}
         self.references_dir.mkdir(parents=True, exist_ok=True)
-        
+
         for item_dir in self.references_dir.iterdir():
             if not item_dir.is_dir():
                 continue
-            
-            contains_images = any(
-                f.is_file() and f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.webp') 
-                for f in item_dir.iterdir()
-            )
-            
-            if contains_images:
-                label = item_dir.name
-                category = "Uncategorized"
-                for file_path in item_dir.iterdir():
-                    if file_path.is_file() and file_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.webp'):
-                        if h := self._compute_hash(file_path):
-                            active_files[h] = {"path": str(file_path), "label": label, "category": category}
-            else:
-                category = item_dir.name
-                for label_dir in item_dir.iterdir():
-                    if not label_dir.is_dir():
-                        continue
-                    label = label_dir.name
-                    for file_path in label_dir.iterdir():
-                        if file_path.is_file() and file_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.webp'):
-                            if h := self._compute_hash(file_path):
-                                active_files[h] = {"path": str(file_path), "label": label, "category": category}
+            self._scan_item_dir(item_dir, active_files)
 
-        if manual_updates:
-            for h, info in manual_updates.items():
-                if h in active_files:
-                    active_files[h].update(info)
-                else:
-                    active_files[h] = info
-                    
+        self._cached_active_files = active_files
         return active_files
+
+    _IMAGE_EXTS = frozenset(('.png', '.jpg', '.jpeg', '.bmp', '.webp'))
+
+    def _scan_item_dir(self, item_dir: Path, active_files: dict):
+        """Scans a single top-level directory, handling both flat and nested layouts."""
+        contains_images = any(
+            f.is_file() and f.suffix.lower() in self._IMAGE_EXTS
+            for f in item_dir.iterdir()
+        )
+        if contains_images:
+            self._index_image_files(item_dir, item_dir.name, "Uncategorized", active_files)
+        else:
+            # Nested layout: item_dir is a category, each sub-dir is a label
+            for label_dir in item_dir.iterdir():
+                if label_dir.is_dir():
+                    self._index_image_files(label_dir, label_dir.name, item_dir.name, active_files)
+
+    def _index_image_files(self, directory: Path, label: str, category: str, active_files: dict):
+        """Hashes every image file in a directory and records it in active_files."""
+        for file_path in directory.iterdir():
+            if file_path.is_file() and file_path.suffix.lower() in self._IMAGE_EXTS:
+                if h := self._compute_hash(file_path):
+                    active_files[h] = {"path": str(file_path), "label": label, "category": category}
 
     # =========================================================================
     # Database Synchronization
@@ -251,23 +263,29 @@ class ImageClassifier:
             return
 
         logger.info(f"Preparing to compute embeddings for {len(missing_hashes)} new source files...")
-        
+
         all_images = []
-        metadata = [] # Stores (hash, label, category_id, variant_index)
+        metadata = []  # Stores (hash, label, category_id, variant_index)
         new_items = []
-        batch_size = 32 # Process 32 images at once for maximum speed
-        
+        batch_size = 32  # Process 32 images at once for maximum speed
+
+        # Per-call category name -> ID cache to avoid repeated DB round-trips
+        cat_id_cache: dict[str, int] = {}
+
         # 1. Open all missing images and generate their visual variants
         for h in missing_hashes:
             info = active_files[h]
-            cat_name = info.get("category")
-            cat_id = db_actions.get_or_create_category(cat_name)
-            
+            cat_name = info.get("category") or "Uncategorized"
+
+            if cat_name not in cat_id_cache:
+                cat_id_cache[cat_name] = db_actions.get_or_create_category(cat_name)
+            cat_id = cat_id_cache[cat_name]
+
             try:
                 img = Image.open(info["path"]).convert("RGB")
                 # Original + Augmentations (Total 7 variants per image)
                 images = [img] + [t(img) for _ in range(2) for t in self._augmentations]
-                
+
                 # Flatten them into a master list for batched processing
                 for idx, image in enumerate(images):
                     all_images.append(image)
@@ -284,10 +302,10 @@ class ImageClassifier:
         for i in range(0, len(all_images), batch_size):
             batch_imgs = all_images[i : i + batch_size]
             batch_meta = metadata[i : i + batch_size]
-            
+
             try:
                 embeddings = self.get_embeddings(batch_imgs)
-                
+
                 # Attach the results to the metadata for insertion
                 for (h, label, cat_id, idx), emb in zip(batch_meta, embeddings):
                     new_items.append({
@@ -299,31 +317,26 @@ class ImageClassifier:
             except Exception as e:
                 logger.error(f"Error processing batch: {e}")
 
-        # 3. Insert into database
+        # 3. Insert into database and commit so IDs are visible to subsequent queries
         db_actions.insert_items(new_items)
+        db_actions.commit()
         logger.info(f"Successfully inserted {len(new_items)} new embeddings.")
 
     def _prune_and_load_references(self, db_actions: DBActions, active_files: dict, active_hashes: set):
         """
-        Iterates DB items. Keeps items that match active disk hashes, 
+        Iterates DB items. Keeps items that match active disk hashes,
         deletes stale ones, and loads the active matrix into Memory.
         """
         db_items = db_actions.get_all_items()
-        
+
         valid_items = []
         del_ids = []
+        cat_id_cache: dict[str, int] = {}
 
         for item in db_items:
             base_hash = "_".join(item.image_hash.split("_")[:-1])
-            
             if base_hash in active_hashes:
-                # Sync category if changed
-                active_cat_name = active_files[base_hash].get("category")
-                if active_cat_name:
-                    active_cat_id = db_actions.get_or_create_category(active_cat_name)
-                    if item.category_id != active_cat_id:
-                        item.category_id = active_cat_id
-                
+                self._sync_item_category(item, active_files[base_hash], db_actions, cat_id_cache)
                 valid_items.append(item)
             else:
                 del_ids.append(item.id)
@@ -331,10 +344,26 @@ class ImageClassifier:
         if del_ids:
             db_actions.delete_items(del_ids)
             logger.info(f"Cleaned up {len(del_ids)} stale embeddings.")
-        
+
         db_actions.commit()
-        
         self._build_search_index(valid_items)
+
+    def _sync_item_category(
+        self,
+        item,
+        file_info: dict,
+        db_actions: DBActions,
+        cat_id_cache: dict,
+    ):
+        """Ensures item.category_id matches the active file's category, updating if needed."""
+        cat_name = file_info.get("category")
+        if not cat_name:
+            return
+        if cat_name not in cat_id_cache:
+            cat_id_cache[cat_name] = db_actions.get_or_create_category(cat_name)
+        active_cat_id = cat_id_cache[cat_name]
+        if item.category_id != active_cat_id:
+            item.category_id = active_cat_id
 
     def _build_search_index(self, items: list):
         """Converts a list of DB items into PyTorch tensors for searching."""

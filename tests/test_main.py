@@ -476,3 +476,78 @@ def test_lifespan_shutdown_cancels_task():
         assert cancelled, "Expected task.cancel() to be called"
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – auto_refresh_task: classifier is None (50->46)
+# ---------------------------------------------------------------------------
+
+def test_auto_refresh_task_classifier_none():
+    """When classifier is None the load_references branch is skipped (branch 50->46)."""
+    import asyncio
+    import main
+
+    async def run():
+        with patch.object(main, "classifier", None):
+            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                mock_sleep.side_effect = [None, asyncio.CancelledError()]
+                with pytest.raises(asyncio.CancelledError):
+                    await main.auto_refresh_task()
+        # No classifier → load_references should never be called (no AttributeError either)
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – lifespan: no _refresh_task at shutdown (78->85)
+# ---------------------------------------------------------------------------
+
+def test_lifespan_shutdown_no_refresh_task():
+    """If _refresh_task is None at shutdown, the cancel block is skipped (branch 78->85)."""
+    import asyncio
+    import main
+
+    async def run():
+        with patch("main.ImageClassifier", return_value=MagicMock()):
+            with patch("main.intercept_uvicorn_logs"):
+                # Return None so _refresh_task stays None after create_task
+                with patch("main.asyncio.create_task", return_value=None):
+                    async with main.lifespan(main.app):
+                        pass  # Should complete without error
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – _extract_archive: neither .zip nor known tar (139->exit)
+# ---------------------------------------------------------------------------
+
+def test_extract_archive_unknown_format(tmp_path):
+    """An unrecognised filename hits neither branch and returns silently (branch 139->exit)."""
+    from main import _extract_archive
+    # Pass a name that doesn't match .zip or any tar variant
+    _extract_archive(b"some bytes", "file.unknown", tmp_path)
+    # Nothing should be extracted and no exception raised
+    assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – _process_archive: duplicate dest_dir key (187->185)
+# ---------------------------------------------------------------------------
+
+def test_process_archive_duplicate_dest_dir_key(tmp_path, mock_classifier):
+    """Two images with the same category+label hit the dest_dirs cache (branch 187->185)."""
+    from main import _process_archive
+    png_data = _make_png_bytes()
+    # Two images under the same Category/Label → same dest_dir key
+    zip_bytes = _make_zip_bytes({
+        "Cat/Label/img1.png": png_data,
+        "Cat/Label/img2.png": png_data,
+    })
+
+    mock_classifier.references_dir = tmp_path
+    mock_classifier._compute_hash.side_effect = ["hash_a", "hash_b"]
+
+    updates, counts = _process_archive(zip_bytes, "upload.zip", mock_classifier)
+    assert counts.get("Label", 0) == 2  # both images counted
+

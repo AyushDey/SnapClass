@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Optional
 from contextlib import asynccontextmanager
@@ -141,55 +142,75 @@ def _extract_archive(contents: bytes, filename: str, dest_dir: Path):
         with tarfile.open(fileobj=io.BytesIO(contents), mode=mode) as tf:
             tf.extractall(dest_dir)
 
+def _parse_archive_entries(temp_path: Path, filename: str) -> list:
+    """Scans extracted archive tree and returns (file_path, safe_label, safe_category) tuples."""
+    tasks = []
+    archive_stem = Path(filename).stem.replace('.tar', '')
+
+    for file_path in temp_path.rglob('*'):
+        if not file_path.is_file() or file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
+            continue
+
+        parts = file_path.relative_to(temp_path).parts
+
+        if len(parts) >= 3:
+            category_name, item_name = parts[-3], parts[-2]
+        elif len(parts) == 2:
+            category_name, item_name = archive_stem, parts[-2]
+        else:
+            continue  # Skip images in the root of the archive
+
+        tasks.append((
+            file_path,
+            sanitize_name(item_name),
+            sanitize_name(category_name) or "Uncategorized",
+        ))
+
+    return tasks
+
+
 def _process_archive(contents: bytes, filename: str, classifier: ImageClassifier):
     """Extracts, processes, and copies bulk uploaded images to the nested reference dir."""
     labels_count = {}
     manual_updates = {}
-    
+
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         _extract_archive(contents, filename, temp_path)
-        
-        # Traverse extracted files
-        for file_path in temp_path.rglob('*'):
-            if not file_path.is_file() or file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
-                continue
-                
-            # Parse category and label from folder structure
-            rel_path = file_path.relative_to(temp_path)
-            parts = rel_path.parts
-            
-            if len(parts) >= 3:
-                category_name, item_name = parts[-3], parts[-2]
-            elif len(parts) == 2:
-                # Use archive name as category if missing outer folder
-                archive_stem = Path(filename).stem.replace('.tar', '')
-                category_name, item_name = archive_stem, parts[-2]
-            else:
-                continue # Skip images in the root of the archive
-                
-            safe_label = sanitize_name(item_name)
-            safe_category = sanitize_name(category_name) or "Uncategorized"
-            
-            # Setup destination directory (Category/Label nested)
-            dest_label_dir = classifier.references_dir / safe_category / safe_label
-            dest_label_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Copy file
-            dest_path = dest_label_dir / file_path.name
+
+        tasks = _parse_archive_entries(temp_path, filename)
+
+        # Pre-create all destination directories (fast, sequential)
+        dest_dirs: dict[tuple, Path] = {}
+        for _, safe_label, safe_category in tasks:
+            key = (safe_category, safe_label)
+            if key not in dest_dirs:
+                dest_label_dir = classifier.references_dir / safe_category / safe_label
+                dest_label_dir.mkdir(parents=True, exist_ok=True)
+                dest_dirs[key] = dest_label_dir
+
+        def _copy_and_hash(task):
+            """Copy a single file to its destination and compute its hash."""
+            file_path, safe_label, safe_category = task
+            dest_path = dest_dirs[(safe_category, safe_label)] / file_path.name
             shutil.copy2(file_path, dest_path)
-            
-            # Register for immediate memory/db update
             h = classifier._compute_hash(dest_path)
+            return h, dest_path, safe_label, safe_category
+
+        # Parallel copy + hash using I/O threads
+        max_workers = min(16, len(tasks)) if tasks else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(_copy_and_hash, tasks))
+
+        for h, dest_path, safe_label, safe_category in results:
             if h:
                 manual_updates[h] = {
-                    "path": str(dest_path), 
-                    "label": safe_label, 
-                    "category": safe_category
+                    "path": str(dest_path),
+                    "label": safe_label,
+                    "category": safe_category,
                 }
-            
             labels_count[safe_label] = labels_count.get(safe_label, 0) + 1
-            
+
     return manual_updates, labels_count
 
 

@@ -42,7 +42,8 @@ else:
 engine = create_engine(
     DB_URL,
     connect_args=_connect_args,
-    pool_size=5,
+    pool_size=10,
+    max_overflow=10,
     pool_timeout=30,
     pool_recycle=1800
 )

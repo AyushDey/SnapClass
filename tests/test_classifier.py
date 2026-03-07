@@ -488,6 +488,29 @@ def test_prune_syncs_changed_category(session_factory, tmp_path):
     assert item.category_id == 2
 
 
+def test_prune_no_category_in_file_info(session_factory, tmp_path):
+    """_sync_item_category returns early when file_info has no category (line 361 coverage)."""
+    clf = _make_classifier(session_factory, tmp_path)
+
+    item = MagicMock()
+    item.image_hash = "abc_0"
+    item.category_id = 1
+    item.id = 7
+
+    mock_db = MagicMock()
+    mock_db.get_all_items.return_value = [item]
+
+    # file_info has no category key → _sync_item_category must early-return
+    active_files = {"abc": {}}
+    with patch.object(clf, "_build_search_index") as mock_build:
+        clf._prune_and_load_references(mock_db, active_files, {"abc"})
+
+    # category_id should remain unchanged, and get_or_create_category not called
+    assert item.category_id == 1
+    mock_db.get_or_create_category.assert_not_called()
+    mock_build.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # _build_search_index
 # ---------------------------------------------------------------------------
@@ -528,3 +551,101 @@ def test_clear_memory(session_factory, tmp_path):
     assert clf.search_labels == []
     assert clf.search_categories == []
     assert clf.reference_embeddings == {}
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – _index_image_files with an empty directory
+# ---------------------------------------------------------------------------
+
+def test_index_image_files_skips_non_image_files(session_factory, tmp_path):
+    """Files in directory that are not images must be skipped (branch 226->225: if condition is False)."""
+    clf = _make_classifier(session_factory, tmp_path)
+    # Place only a non-image file so the loop runs but never adds to active
+    (tmp_path / "readme.txt").write_text("not an image")
+    active = {}
+    clf._index_image_files(tmp_path, "label", "category", active)
+    assert active == {}
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – _sync_new_references: category ID cache hit (280->282)
+# ---------------------------------------------------------------------------
+
+def test_sync_new_references_category_cache_hit(session_factory, tmp_path):
+    """When two images share the same category, get_or_create_category is called only once."""
+    clf = _make_classifier(session_factory, tmp_path)
+
+    img1 = tmp_path / "a.jpg"
+    img2 = tmp_path / "b.jpg"
+    _make_rgb_image().save(str(img1))
+    _make_rgb_image().save(str(img2))
+
+    active_files = {
+        "h1": {"path": str(img1), "label": "thing1", "category": "SharedCat"},
+        "h2": {"path": str(img2), "label": "thing2", "category": "SharedCat"},
+    }
+
+    mock_db = MagicMock()
+    mock_db.get_existing_hashes.return_value = set()
+    mock_db.get_or_create_category.return_value = 5
+
+    fake_emb = [0.1] * 512
+    with patch.object(clf, "get_embeddings", return_value=[fake_emb] * 7):
+        clf._sync_new_references(mock_db, active_files, {"h1", "h2"})
+
+    # Category must have been looked up only once despite two images
+    mock_db.get_or_create_category.assert_called_once_with("SharedCat")
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – _sync_item_category: cat_id already in cache (362->364)
+# ---------------------------------------------------------------------------
+
+def test_prune_category_cache_hit(session_factory, tmp_path):
+    """Two DB items with the same category name triggers cache hit on second item (branch 362->364)."""
+    clf = _make_classifier(session_factory, tmp_path)
+
+    item1 = MagicMock()
+    item1.image_hash = "h1_0"
+    item1.category_id = 1
+    item2 = MagicMock()
+    item2.image_hash = "h2_0"
+    item2.category_id = 1
+
+    mock_db = MagicMock()
+    mock_db.get_all_items.return_value = [item1, item2]
+    mock_db.get_or_create_category.return_value = 1
+
+    active_files = {
+        "h1": {"category": "Tools"},
+        "h2": {"category": "Tools"},  # same category → second call is a cache hit
+    }
+    with patch.object(clf, "_build_search_index"):
+        clf._prune_and_load_references(mock_db, active_files, {"h1", "h2"})
+
+    # Should be looked up only once, second item hits the cache
+    mock_db.get_or_create_category.assert_called_once_with("Tools")
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage – _build_search_index: duplicate label (385->387)
+# ---------------------------------------------------------------------------
+
+def test_build_search_index_duplicate_labels(session_factory, tmp_path):
+    """Two items with the same label exercise the `lbl in reference_embeddings` True branch (385->387)."""
+    clf = _make_classifier(session_factory, tmp_path)
+
+    item1 = MagicMock()
+    item1.embedding = [0.1] * 512
+    item1.item_name = "pen"
+    item1.category_id = 1
+
+    item2 = MagicMock()
+    item2.embedding = [0.2] * 512
+    item2.item_name = "pen"  # same label as item1
+    item2.category_id = 1
+
+    clf._build_search_index([item1, item2])
+    # Both embeddings should be stored under the same label key
+    assert len(clf.reference_embeddings["pen"]) == 2
+
