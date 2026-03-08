@@ -89,13 +89,17 @@ async def lifespan(app: FastAPI):
 # FastAPI App Configuration
 # =========================================================================
 
+from fastapi.staticfiles import StaticFiles
+
 app = FastAPI(title="SnapClass: Offline Few-Shot Classifier", lifespan=lifespan)
+
+app.mount("/references", StaticFiles(directory="references"), name="references")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173/",
-        "http://127.0.0.1:5173/",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
     allow_credentials=True,
     allow_methods=["*"],

@@ -103,21 +103,30 @@ class ImageClassifier:
             best_lbl, (best_score, best_category) = sorted_scores[0]
             result_class = best_lbl if best_score >= threshold else "Unknown"
             
-            # Find other matches in the same category
-            matches = [
-                {"class": k, "score": round(v, 4)} 
-                for k, (v, c) in sorted_scores 
-                if k != result_class and c == best_category
-            ][:5]
             db_actions = DBActions(db_session)
             # Fetch the actual category name from the database using the ID
             category_name = db_actions.get_category_by_id(best_category)
+
+            # Find other matches in the same category
+            matches = []
+            for k, (v, c) in sorted_scores:
+                if k != result_class and c == best_category:
+                    if len(matches) >= 5:
+                        break
+                    match_cat_name = db_actions.get_category_by_id(c)
+                    matches.append({
+                        "class": k, 
+                        "score": round(v, 4),
+                        "category_name": match_cat_name,
+                        "image_path": self.get_reference_image_path(k, match_cat_name)
+                    })
             
             if result_class != 'Unknown':
                 response = {
                     "class": result_class,
                     "category_name": category_name,
                     "confidence": round(best_score, 4),
+                    "image_path": self.get_reference_image_path(result_class, category_name),
                     "matches": matches
                 }
             else:
@@ -393,3 +402,10 @@ class ImageClassifier:
         self.search_labels = []
         self.search_categories = []
         self.reference_embeddings = {}
+
+    def get_reference_image_path(self, label: str, category_name: str) -> str | None:
+        """Returns the relative path for the frontend to load a reference image."""
+        for info in self._cached_active_files.values():
+            if info["label"] == label and info.get("category", "Uncategorized") == category_name:
+                return "/" + Path(info["path"]).as_posix()
+        return None
