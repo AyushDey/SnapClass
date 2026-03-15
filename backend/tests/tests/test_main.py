@@ -73,6 +73,94 @@ def test_sanitize_name_strips_leading_trailing():
     assert sanitize_name("  item  ") == "item"
 
 
+def test_is_valid_reference_filename_rejects_hidden():
+    from main import is_valid_reference_filename
+    assert not is_valid_reference_filename("._image.png")
+    assert not is_valid_reference_filename(".DS_Store")
+    assert not is_valid_reference_filename(".hidden.jpg")
+    assert not is_valid_reference_filename("DS_Store")
+
+
+def test_is_valid_reference_filename_rejects_ds_store_without_dot():
+    from main import is_valid_reference_filename
+    assert not is_valid_reference_filename("DS_Store")
+
+
+def test_is_valid_archive_file_filters_metadata(tmp_path):
+    from main import _is_valid_archive_file
+    assert _is_valid_archive_file(tmp_path / "image.png") is False
+
+    file_path = tmp_path / "__MACOSX" / "image.png"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"x")
+    assert _is_valid_archive_file(file_path) is False
+
+    ds_file = tmp_path / ".DS_Store"
+    ds_file.write_bytes(b"x")
+    assert _is_valid_archive_file(ds_file) is False
+
+    ds_file2 = tmp_path / "DS_Store"
+    ds_file2.write_bytes(b"x")
+    assert _is_valid_archive_file(ds_file2) is False
+
+    hidden_file = tmp_path / ".hidden.png"
+    hidden_file.write_bytes(b"x")
+    assert _is_valid_archive_file(hidden_file) is False
+
+    txt_file = tmp_path / "image.txt"
+    txt_file.write_bytes(b"x")
+    assert _is_valid_archive_file(txt_file) is False
+
+
+def test_process_archive_creates_dest_dirs(tmp_path, mock_classifier):
+    from main import _process_archive
+    zip_bytes = _make_zip_bytes({"Cat/Label/img.png": _make_png_bytes()})
+    mock_classifier.references_dir = tmp_path
+    mock_classifier._compute_hash.return_value = "h"
+    updates, counts = _process_archive(zip_bytes, "upload.zip", mock_classifier)
+    assert counts.get("Label") == 1
+    assert (tmp_path / "Cat" / "Label" / "img.png").exists()
+
+
+def test_process_archive_skips_metadata_entries(tmp_path, mock_classifier):
+    from main import _process_archive
+    zip_bytes = _make_zip_bytes({"__MACOSX/._file": b"x", "Cat/Label/img.png": _make_png_bytes()})
+    mock_classifier.references_dir = tmp_path
+    mock_classifier._compute_hash.return_value = "h"
+    updates, counts = _process_archive(zip_bytes, "upload.zip", mock_classifier)
+    assert counts.get("Label", 0) == 1
+
+
+def test_process_archive_skipped_entries_logs(tmp_path, mock_classifier):
+    from main import _process_archive
+    zip_bytes = _make_zip_bytes({"chair1.png": _make_png_bytes()})
+    mock_classifier.references_dir = tmp_path
+    mock_classifier._compute_hash.return_value = "h"
+    updates, counts = _process_archive(zip_bytes, "upload.zip", mock_classifier)
+    assert updates == {}
+    assert counts == {}
+
+
+def test_process_archive_skipped_branch_is_executed(tmp_path, mock_classifier, monkeypatch):
+    from main import _process_archive
+    with monkeypatch.context() as m:
+        m.setattr("main._extract_archive", lambda contents, filename, dest: None)
+        m.setattr("main._parse_archive_entries", lambda temp_path, filename: ([], 2))
+        mock_classifier.references_dir = tmp_path
+        mock_classifier._compute_hash.return_value = "h"
+        updates, counts = _process_archive(b"", "upload.zip", mock_classifier)
+    assert updates == {}
+    assert counts == {}
+
+
+def test_initialize_db_failure(monkeypatch):
+    import main
+    from main import _initialize_db
+    monkeypatch.setattr(main, "initialize_database", lambda engine: (_ for _ in ()).throw(RuntimeError("fail")))
+    # Should not raise
+    _initialize_db()
+
+
 # ---------------------------------------------------------------------------
 # _extract_archive
 # ---------------------------------------------------------------------------

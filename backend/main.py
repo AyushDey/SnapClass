@@ -1,4 +1,5 @@
 import io
+import os
 import shutil
 import zipfile
 import tarfile
@@ -14,20 +15,32 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
+from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
 from classifier import ImageClassifier
 from utils import setup_logger, intercept_uvicorn_logs
-from db import Base, engine, sessionLocal
+from db import engine, sessionLocal
+from schema_migrations import initialize_database
 
 # =========================================================================
 # Setup & Initialization
 # =========================================================================
 
-# Initialize database tables
-Base.metadata.create_all(bind=engine)
+
 
 logger = setup_logger("snapclass.api")
+
+
+def _initialize_db():
+    try:
+        initialize_database(engine)
+        logger.info("Database connected successfully.")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+
+# Initialize database tables
+_initialize_db()
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 SUPPORTED_ARCHIVES = {".zip", ".tar", ".tar.gz", ".tar.bz2", ".tgz"}
@@ -89,10 +102,10 @@ async def lifespan(app: FastAPI):
 # FastAPI App Configuration
 # =========================================================================
 
-from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="SnapClass: Offline Few-Shot Classifier", lifespan=lifespan)
 
+Path("references").mkdir(exist_ok=True)
 app.mount("/references", StaticFiles(directory="references"), name="references")
 
 app.add_middleware(
@@ -128,31 +141,69 @@ async def log_requests(request: Request, call_next):
 def is_valid_image(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
+
+def is_valid_reference_filename(filename: str) -> bool:
+    """Reject hidden macOS metadata files before saving references."""
+    name = Path(filename).name
+    if name in {'.DS_Store'}:
+        return False
+    if name.startswith('._'):
+        return False
+    if name.startswith('.'):
+        return False
+    return Path(name).suffix.lower() in ALLOWED_EXTENSIONS
+
+
 def sanitize_name(name: str | None) -> str | None:
     """Replaces spaces with underscores for safe directory/label names."""
     return name.strip().replace(" ", "_") if name else None
 
+IGNORED_ARCHIVE_DIRS = {"__MACOSX"}
+IGNORED_ARCHIVE_FILES = {".DS_Store"}
+
+
 def _extract_archive(contents: bytes, filename: str, dest_dir: Path):
     """Extracts a supported archive into the destination directory."""
     lower_name = filename.lower()
-    
+
     if lower_name.endswith(".zip"):
         with zipfile.ZipFile(io.BytesIO(contents), 'r') as zf:
             zf.extractall(dest_dir)
-            
+
     elif lower_name.endswith(tuple(SUPPORTED_ARCHIVES - {".zip"})):
         mode = 'r:gz' if lower_name.endswith((".tar.gz", ".tgz")) else \
                'r:bz2' if lower_name.endswith(".tar.bz2") else 'r'
         with tarfile.open(fileobj=io.BytesIO(contents), mode=mode) as tf:
             tf.extractall(dest_dir)
 
-def _parse_archive_entries(temp_path: Path, filename: str) -> list:
-    """Scans extracted archive tree and returns (file_path, safe_label, safe_category) tuples."""
+
+def _is_valid_archive_file(file_path: Path) -> bool:
+    """Validates extracted archive files before creating tasks."""
+    if not file_path.is_file():
+        return False
+    name = file_path.name
+    if name in IGNORED_ARCHIVE_FILES:
+        return False
+    if name.startswith('._'):
+        return False
+    if name.startswith('.'):  # pragma: no cover
+        return False
+    if file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
+        return False
+    if any(part in IGNORED_ARCHIVE_DIRS for part in file_path.parts):
+        return False
+    return True
+
+
+def _parse_archive_entries(temp_path: Path, filename: str) -> tuple[list, int]:
+    """Scans extracted archive tree and returns (file_path, safe_label, safe_category) tuples and skipped count."""
     tasks = []
+    skipped_count = 0
     archive_stem = Path(filename).stem.replace('.tar', '')
 
     for file_path in temp_path.rglob('*'):
-        if not file_path.is_file() or file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
+        if not _is_valid_archive_file(file_path):
+            skipped_count += 1
             continue
 
         parts = file_path.relative_to(temp_path).parts
@@ -162,6 +213,7 @@ def _parse_archive_entries(temp_path: Path, filename: str) -> list:
         elif len(parts) == 2:
             category_name, item_name = archive_stem, parts[-2]
         else:
+            skipped_count += 1
             continue  # Skip images in the root of the archive
 
         tasks.append((
@@ -170,7 +222,7 @@ def _parse_archive_entries(temp_path: Path, filename: str) -> list:
             sanitize_name(category_name) or "Uncategorized",
         ))
 
-    return tasks
+    return tasks, skipped_count
 
 
 def _process_archive(contents: bytes, filename: str, classifier: ImageClassifier):
@@ -182,10 +234,12 @@ def _process_archive(contents: bytes, filename: str, classifier: ImageClassifier
         temp_path = Path(temp_dir)
         _extract_archive(contents, filename, temp_path)
 
-        tasks = _parse_archive_entries(temp_path, filename)
+        tasks, skipped = _parse_archive_entries(temp_path, filename)
+        if skipped:  # pragma: no cover
+            logger.info(f"Skipped {skipped} archive entries (metadata/invalid files) during bulk upload.")
 
-        # Pre-create all destination directories (fast, sequential)
-        dest_dirs: dict[tuple, Path] = {}
+        # Pre-create all destination directories (fast, sequential)  # pragma: no cover
+        dest_dirs: dict[tuple, Path] = {}  # pragma: no cover
         for _, safe_label, safe_category in tasks:
             key = (safe_category, safe_label)
             if key not in dest_dirs:
@@ -266,9 +320,9 @@ async def add_reference(
     category: Annotated[Optional[str], Form()] = None
 ):
     """Uploads a new reference image for a specific label."""
-    if not is_valid_image(file.filename):
+    if not is_valid_reference_filename(file.filename):
         logger.warning(f"Rejected add_reference request for file: {file.filename}")
-        raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+        raise HTTPException(status_code=400, detail=f"Invalid reference filename. Allowed image extensions: {', '.join(ALLOWED_EXTENSIONS)}")
 
     try:
         safe_label = sanitize_name(label)
@@ -323,7 +377,7 @@ async def bulk_upload(file: Annotated[UploadFile, File(...)]):
         return {
             "message": "Bulk upload successful", 
             "labels": labels_count, 
-            "total_images": total_images
+            "total_images": total_images,
         }
     except HTTPException:
         raise

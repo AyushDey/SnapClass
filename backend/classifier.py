@@ -12,9 +12,6 @@ from utils import setup_logger
 from sqlalchemy.orm import Session
 from db_actions import DBActions
 
-# Need to import BookletCategory to fetch the text name by ID
-from models import BookletCategory
-
 logger = setup_logger("snapclass.classifier")
 
 class ImageClassifier:
@@ -215,10 +212,18 @@ class ImageClassifier:
 
     _IMAGE_EXTS = frozenset(('.png', '.jpg', '.jpeg', '.bmp', '.webp'))
 
+    def _is_valid_image_file(self, file_path: Path) -> bool:
+        """Check whether a file is a valid reference image file to process."""
+        if not file_path.is_file():
+            return False
+        if file_path.name.startswith('.') or file_path.name.startswith('._'):
+            return False
+        return file_path.suffix.lower() in self._IMAGE_EXTS
+
     def _scan_item_dir(self, item_dir: Path, active_files: dict):
         """Scans a single top-level directory, handling both flat and nested layouts."""
         contains_images = any(
-            f.is_file() and f.suffix.lower() in self._IMAGE_EXTS
+            self._is_valid_image_file(f)
             for f in item_dir.iterdir()
         )
         if contains_images:
@@ -232,7 +237,7 @@ class ImageClassifier:
     def _index_image_files(self, directory: Path, label: str, category: str, active_files: dict):
         """Hashes every image file in a directory and records it in active_files."""
         for file_path in directory.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in self._IMAGE_EXTS:
+            if self._is_valid_image_file(file_path):
                 if h := self._compute_hash(file_path):
                     active_files[h] = {"path": str(file_path), "label": label, "category": category}
 
@@ -274,17 +279,24 @@ class ImageClassifier:
         logger.info(f"Preparing to compute embeddings for {len(missing_hashes)} new source files...")
 
         all_images = []
-        metadata = []  # Stores (hash, label, category_id, variant_index)
-        new_items = []
+        metadata = []  # Stores (hash, item_id, category_id, variant_index)
+        new_embeddings = []
         batch_size = 32  # Process 32 images at once for maximum speed
 
+        # Per-call item/category caches avoid repeated DB round-trips.
+        item_id_cache: dict[str, int] = {}
         # Per-call category name -> ID cache to avoid repeated DB round-trips
         cat_id_cache: dict[str, int] = {}
 
         # 1. Open all missing images and generate their visual variants
         for h in missing_hashes:
             info = active_files[h]
+            label = info["label"]
             cat_name = info.get("category") or "Uncategorized"
+
+            if label not in item_id_cache:
+                item_id_cache[label] = db_actions.get_or_create_item(label)
+            item_id = item_id_cache[label]
 
             if cat_name not in cat_id_cache:
                 cat_id_cache[cat_name] = db_actions.get_or_create_category(cat_name)
@@ -298,7 +310,7 @@ class ImageClassifier:
                 # Flatten them into a master list for batched processing
                 for idx, image in enumerate(images):
                     all_images.append(image)
-                    metadata.append((h, info["label"], cat_id, idx))
+                    metadata.append((h, item_id, cat_id, idx))
             except Exception as e:
                 logger.error(f"Error reading {info['path']}: {e}")
 
@@ -316,75 +328,75 @@ class ImageClassifier:
                 embeddings = self.get_embeddings(batch_imgs)
 
                 # Attach the results to the metadata for insertion
-                for (h, label, cat_id, idx), emb in zip(batch_meta, embeddings):
-                    new_items.append({
+                for (h, item_id, cat_id, idx), emb in zip(batch_meta, embeddings):
+                    new_embeddings.append({
                         "image_hash": f"{h}_{idx}",
-                        "item_name": label,
-                        "category_id": cat_id,
+                        "booklet_item_id": item_id,
+                        "booklet_category_id": cat_id,
                         "embedding": emb
                     })
             except Exception as e:
                 logger.error(f"Error processing batch: {e}")
 
         # 3. Insert into database and commit so IDs are visible to subsequent queries
-        db_actions.insert_items(new_items)
+        db_actions.insert_embeddings(new_embeddings)
         db_actions.commit()
-        logger.info(f"Successfully inserted {len(new_items)} new embeddings.")
+        logger.info(f"Successfully inserted {len(new_embeddings)} new embeddings.")
 
     def _prune_and_load_references(self, db_actions: DBActions, active_files: dict, active_hashes: set):
         """
         Iterates DB items. Keeps items that match active disk hashes,
         deletes stale ones, and loads the active matrix into Memory.
         """
-        db_items = db_actions.get_all_items()
+        db_embeddings = db_actions.get_all_embeddings()
 
-        valid_items = []
+        valid_embeddings = []
         del_ids = []
         cat_id_cache: dict[str, int] = {}
 
-        for item in db_items:
-            base_hash = "_".join(item.image_hash.split("_")[:-1])
+        for embedding in db_embeddings:
+            base_hash = "_".join(embedding.image_hash.split("_")[:-1])
             if base_hash in active_hashes:
-                self._sync_item_category(item, active_files[base_hash], db_actions, cat_id_cache)
-                valid_items.append(item)
+                self._sync_embedding_category(embedding, active_files[base_hash], db_actions, cat_id_cache)
+                valid_embeddings.append(embedding)
             else:
-                del_ids.append(item.id)
+                del_ids.append(embedding.id)
 
         if del_ids:
-            db_actions.delete_items(del_ids)
+            db_actions.delete_embeddings(del_ids)
             logger.info(f"Cleaned up {len(del_ids)} stale embeddings.")
 
         db_actions.commit()
-        self._build_search_index(valid_items)
+        self._build_search_index(valid_embeddings)
 
-    def _sync_item_category(
+    def _sync_embedding_category(
         self,
-        item,
+        embedding,
         file_info: dict,
         db_actions: DBActions,
         cat_id_cache: dict,
     ):
-        """Ensures item.category_id matches the active file's category, updating if needed."""
+        """Ensures embedding category matches the active file's category, updating if needed."""
         cat_name = file_info.get("category")
         if not cat_name:
             return
         if cat_name not in cat_id_cache:
             cat_id_cache[cat_name] = db_actions.get_or_create_category(cat_name)
         active_cat_id = cat_id_cache[cat_name]
-        if item.category_id != active_cat_id:
-            item.category_id = active_cat_id
+        if embedding.booklet_category_id != active_cat_id:
+            embedding.booklet_category_id = active_cat_id
 
-    def _build_search_index(self, items: list):
-        """Converts a list of DB items into PyTorch tensors for searching."""
-        if not items:
+    def _build_search_index(self, embeddings: list):
+        """Converts a list of DB embeddings into PyTorch tensors for searching."""
+        if not embeddings:
             self._clear_memory()
             return
 
-        embeddings = [item.embedding for item in items]
-        labels = [item.item_name for item in items]
-        categories = [item.category_id for item in items]
+        vectors = [embedding.embedding for embedding in embeddings]
+        labels = [embedding.item.item_name for embedding in embeddings]
+        categories = [embedding.booklet_category_id for embedding in embeddings]
 
-        matrix = torch.tensor(np.array(embeddings), dtype=torch.float32).to(self.device)
+        matrix = torch.tensor(np.array(vectors), dtype=torch.float32).to(self.device)
         self.search_matrix = F.normalize(matrix, p=2, dim=1)
         self.search_labels = labels
         self.search_categories = categories

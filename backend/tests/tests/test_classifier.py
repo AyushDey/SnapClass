@@ -5,13 +5,11 @@ import io
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock, call
 import pytest
 import torch
 from PIL import Image
-
-from models import BookletItem, BookletCategory
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -21,6 +19,16 @@ def _make_rgb_image(width=64, height=64):
     """Creates a minimal PIL RGB image."""
     img = Image.new("RGB", (width, height), color=(100, 150, 200))
     return img
+
+
+def _make_embedding_record(label: str, category_id: int, image_hash: str, embedding_id: int = 1):
+    return SimpleNamespace(
+        id=embedding_id,
+        image_hash=image_hash,
+        booklet_category_id=category_id,
+        embedding=[0.1] * 512,
+        item=SimpleNamespace(item_name=label),
+    )
 
 
 def _make_classifier(session_factory, references_dir):
@@ -175,6 +183,66 @@ def test_classify_empty_sorted_scores(session_factory, tmp_path):
         result = clf.classify(_make_rgb_image())
 
     assert result["class"] == "Unknown Image"
+
+
+def test_classify_matches_limit_break(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf.search_matrix = torch.zeros(1, 512)
+    clf.search_labels = [f"label{i}" for i in range(10)]
+    clf.search_categories = [1 for _ in range(10)]
+
+    mock_db_actions = MagicMock()
+    mock_db_actions.get_category_by_id.return_value = "Furniture"
+
+    # Return 7 results; only first 5 should be appended to matches and then break
+    multi_scores = {f"label{i}": (0.9 - i * 0.01, 1) for i in range(7)}
+
+    with patch("classifier.DBActions", return_value=mock_db_actions):
+        with patch.object(clf, "_compute_multi_scale_scores", return_value=multi_scores):
+            with patch.object(clf, "get_reference_image_path", return_value="/ref.png"):
+                result = clf.classify(_make_rgb_image(), threshold=0.5)
+
+    assert result["class"] == "label0"
+    assert len(result["matches"]) <= 5
+
+
+def test_sync_new_references_item_cache_hit(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+
+    img1 = tmp_path / "a.jpg"
+    img2 = tmp_path / "b.jpg"
+    _make_rgb_image().save(str(img1))
+    _make_rgb_image().save(str(img2))
+
+    active_files = {
+        "h1": {"path": str(img1), "label": "shared", "category": "CatA"},
+        "h2": {"path": str(img2), "label": "shared", "category": "CatB"},
+    }
+
+    mock_db = MagicMock()
+    mock_db.get_existing_hashes.return_value = set()
+    mock_db.get_or_create_item.return_value = 1
+    mock_db.get_or_create_category.side_effect = [1, 2]
+
+    fake_emb = [0.1] * 512
+    with patch.object(clf, "get_embeddings", return_value=[fake_emb] * 14):
+        clf._sync_new_references(mock_db, active_files, {"h1", "h2"})
+
+    mock_db.get_or_create_item.assert_called_once_with("shared")
+
+
+def test_get_reference_image_path_none(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf._cached_active_files = {"h1": {"path": "x", "label": "a", "category": "Cat"}}
+    assert clf.get_reference_image_path("b", "Other") is None
+
+
+def test_get_reference_image_path_valid(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf._cached_active_files = {
+        "h1": {"path": "/references/Cat/a.jpg", "label": "a", "category": "Cat"}
+    }
+    assert clf.get_reference_image_path("a", "Cat") == "//references/Cat/a.jpg"
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +444,7 @@ def test_sync_new_references_no_missing(session_factory, tmp_path):
     mock_db.get_existing_hashes.return_value = {"h1"}
 
     clf._sync_new_references(mock_db, {"h1": {"path": "/x", "label": "a", "category": "Cat"}}, {"h1"})
-    mock_db.insert_items.assert_not_called()
+    mock_db.insert_embeddings.assert_not_called()
 
 
 def test_sync_new_references_with_new_image(session_factory, tmp_path):
@@ -388,13 +456,14 @@ def test_sync_new_references_with_new_image(session_factory, tmp_path):
 
     mock_db = MagicMock()
     mock_db.get_existing_hashes.return_value = set()
+    mock_db.get_or_create_item.return_value = 11
     mock_db.get_or_create_category.return_value = 1
 
     fake_emb = [0.1] * 512
     with patch.object(clf, "get_embeddings", return_value=[fake_emb] * 7):
         clf._sync_new_references(mock_db, active_files, {"abc"})
 
-    mock_db.insert_items.assert_called_once()
+    mock_db.insert_embeddings.assert_called_once()
 
 
 def test_sync_new_references_image_open_error(session_factory, tmp_path):
@@ -403,11 +472,12 @@ def test_sync_new_references_image_open_error(session_factory, tmp_path):
     active_files = {"broken": {"path": str(tmp_path / "missing.jpg"), "label": "x", "category": "y"}}
     mock_db = MagicMock()
     mock_db.get_existing_hashes.return_value = set()
+    mock_db.get_or_create_item.return_value = 5
     mock_db.get_or_create_category.return_value = 1
 
     # Missing file → Image.open raises, all_images stays empty → early return
     clf._sync_new_references(mock_db, active_files, {"broken"})
-    mock_db.insert_items.assert_not_called()
+    mock_db.insert_embeddings.assert_not_called()
 
 
 def test_sync_new_references_batch_exception(session_factory, tmp_path):
@@ -419,12 +489,13 @@ def test_sync_new_references_batch_exception(session_factory, tmp_path):
 
     mock_db = MagicMock()
     mock_db.get_existing_hashes.return_value = set()
+    mock_db.get_or_create_item.return_value = 7
     mock_db.get_or_create_category.return_value = 1
 
     with patch.object(clf, "get_embeddings", side_effect=RuntimeError("embed fail")):
         clf._sync_new_references(mock_db, active_files, {"abc"})
-    # Exception is caught internally; insert_items should still be called (with empty list)
-    mock_db.insert_items.assert_called()
+    # Exception is caught internally; insert_embeddings should still be called (with empty list)
+    mock_db.insert_embeddings.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -434,79 +505,67 @@ def test_sync_new_references_batch_exception(session_factory, tmp_path):
 def test_prune_keeps_valid_items(session_factory, tmp_path):
     clf = _make_classifier(session_factory, tmp_path)
 
-    item = MagicMock()
-    item.image_hash = "abc_0"
-    item.category_id = 1
-    item.id = 10
+    embedding = _make_embedding_record("tool", 1, "abc_0", embedding_id=10)
 
     mock_db = MagicMock()
-    mock_db.get_all_items.return_value = [item]
+    mock_db.get_all_embeddings.return_value = [embedding]
     mock_db.get_or_create_category.return_value = 1
 
     active_files = {"abc": {"category": "Tools"}}
     with patch.object(clf, "_build_search_index") as mock_build:
         clf._prune_and_load_references(mock_db, active_files, {"abc"})
 
-    # No stale items → delete_items is guarded by `if del_ids:` so it's never called
-    mock_db.delete_items.assert_not_called()
+    # No stale embeddings → delete_embeddings is guarded by `if del_ids:` so it's never called
+    mock_db.delete_embeddings.assert_not_called()
     mock_build.assert_called_once()
 
 
 def test_prune_deletes_stale_items(session_factory, tmp_path):
     clf = _make_classifier(session_factory, tmp_path)
 
-    item = MagicMock()
-    item.image_hash = "stale_0"
-    item.category_id = 1
-    item.id = 99
+    embedding = _make_embedding_record("tool", 1, "stale_0", embedding_id=99)
 
     mock_db = MagicMock()
-    mock_db.get_all_items.return_value = [item]
+    mock_db.get_all_embeddings.return_value = [embedding]
 
     with patch.object(clf, "_build_search_index"):
         clf._prune_and_load_references(mock_db, {}, set())
 
-    mock_db.delete_items.assert_called_with([99])
+    mock_db.delete_embeddings.assert_called_with([99])
 
 
 def test_prune_syncs_changed_category(session_factory, tmp_path):
     clf = _make_classifier(session_factory, tmp_path)
 
-    item = MagicMock()
-    item.image_hash = "abc_0"
-    item.category_id = 1
-    item.id = 5
+    embedding = _make_embedding_record("tool", 1, "abc_0", embedding_id=5)
 
     mock_db = MagicMock()
-    mock_db.get_all_items.return_value = [item]
+    mock_db.get_all_embeddings.return_value = [embedding]
     mock_db.get_or_create_category.return_value = 2  # different category
 
     active_files = {"abc": {"category": "NewCat"}}
     with patch.object(clf, "_build_search_index"):
         clf._prune_and_load_references(mock_db, active_files, {"abc"})
 
-    assert item.category_id == 2
+    assert embedding.booklet_category_id == 2
 
 
 def test_prune_no_category_in_file_info(session_factory, tmp_path):
-    """_sync_item_category returns early when file_info has no category (line 361 coverage)."""
+    """_sync_embedding_category returns early when file_info has no category."""
     clf = _make_classifier(session_factory, tmp_path)
 
-    item = MagicMock()
-    item.image_hash = "abc_0"
-    item.category_id = 1
-    item.id = 7
+    embedding = _make_embedding_record("tool", 1, "abc_0", embedding_id=7)
 
     mock_db = MagicMock()
-    mock_db.get_all_items.return_value = [item]
+    mock_db.get_all_embeddings.return_value = [embedding]
 
-    # file_info has no category key → _sync_item_category must early-return
+    # file_info has no category key → _sync_embedding_category must early-return
     active_files = {"abc": {}}
     with patch.object(clf, "_build_search_index") as mock_build:
         clf._prune_and_load_references(mock_db, active_files, {"abc"})
 
-    # category_id should remain unchanged, and get_or_create_category not called
-    assert item.category_id == 1
+    # category id should remain unchanged, and get_or_create_category not called
+    assert embedding.booklet_category_id == 1
     mock_db.get_or_create_category.assert_not_called()
     mock_build.assert_called_once()
 
@@ -524,12 +583,9 @@ def test_build_search_index_empty_items(session_factory, tmp_path):
 def test_build_search_index_builds_matrix(session_factory, tmp_path):
     clf = _make_classifier(session_factory, tmp_path)
 
-    item = MagicMock()
-    item.embedding = [0.1] * 512
-    item.item_name = "pen"
-    item.category_id = 1
+    embedding = _make_embedding_record("pen", 1, "pen_0")
 
-    clf._build_search_index([item])
+    clf._build_search_index([embedding])
     assert clf.search_matrix is not None
     assert clf.search_labels == ["pen"]
     assert "pen" in clf.reference_embeddings
@@ -568,7 +624,7 @@ def test_index_image_files_skips_non_image_files(session_factory, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Branch coverage – _sync_new_references: category ID cache hit (280->282)
+# Branch coverage – _sync_new_references: category ID cache hit
 # ---------------------------------------------------------------------------
 
 def test_sync_new_references_category_cache_hit(session_factory, tmp_path):
@@ -587,6 +643,7 @@ def test_sync_new_references_category_cache_hit(session_factory, tmp_path):
 
     mock_db = MagicMock()
     mock_db.get_existing_hashes.return_value = set()
+    mock_db.get_or_create_item.side_effect = [1, 2]
     mock_db.get_or_create_category.return_value = 5
 
     fake_emb = [0.1] * 512
@@ -598,22 +655,18 @@ def test_sync_new_references_category_cache_hit(session_factory, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Branch coverage – _sync_item_category: cat_id already in cache (362->364)
+# Branch coverage – _sync_embedding_category: cat_id already in cache
 # ---------------------------------------------------------------------------
 
 def test_prune_category_cache_hit(session_factory, tmp_path):
-    """Two DB items with the same category name triggers cache hit on second item (branch 362->364)."""
+    """Two embedding rows with the same category name trigger a cache hit on the second row."""
     clf = _make_classifier(session_factory, tmp_path)
 
-    item1 = MagicMock()
-    item1.image_hash = "h1_0"
-    item1.category_id = 1
-    item2 = MagicMock()
-    item2.image_hash = "h2_0"
-    item2.category_id = 1
+    item1 = _make_embedding_record("thing1", 1, "h1_0", embedding_id=1)
+    item2 = _make_embedding_record("thing2", 1, "h2_0", embedding_id=2)
 
     mock_db = MagicMock()
-    mock_db.get_all_items.return_value = [item1, item2]
+    mock_db.get_all_embeddings.return_value = [item1, item2]
     mock_db.get_or_create_category.return_value = 1
 
     active_files = {
@@ -632,20 +685,13 @@ def test_prune_category_cache_hit(session_factory, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_build_search_index_duplicate_labels(session_factory, tmp_path):
-    """Two items with the same label exercise the `lbl in reference_embeddings` True branch (385->387)."""
+    """Two embeddings with the same label exercise the `lbl in reference_embeddings` True branch."""
     clf = _make_classifier(session_factory, tmp_path)
 
-    item1 = MagicMock()
-    item1.embedding = [0.1] * 512
-    item1.item_name = "pen"
-    item1.category_id = 1
-
-    item2 = MagicMock()
+    item1 = _make_embedding_record("pen", 1, "pen_0", embedding_id=1)
+    item2 = _make_embedding_record("pen", 1, "pen_1", embedding_id=2)
     item2.embedding = [0.2] * 512
-    item2.item_name = "pen"  # same label as item1
-    item2.category_id = 1
 
     clf._build_search_index([item1, item2])
     # Both embeddings should be stored under the same label key
     assert len(clf.reference_embeddings["pen"]) == 2
-

@@ -1,7 +1,7 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert
-from models import BookletItem, BookletCategory
+from models import BookletItem, BookletCategory, BookletEmbedding
 
 class DBActions:
     """Encapsulates all database interactions for the classifier."""
@@ -10,8 +10,21 @@ class DBActions:
 
     def get_existing_hashes(self) -> set:
         """Fetch set of all image hashes currently in the DB."""
-        stmt = select(BookletItem.image_hash)
+        stmt = select(BookletEmbedding.image_hash)
         return {row[0] for row in self.session.execute(stmt).fetchall()}
+
+    def get_or_create_item(self, item_name: str) -> int:
+        """Finds an item by name or creates it, returning the ID."""
+        stmt = select(BookletItem).where(BookletItem.item_name == item_name)
+        item = self.session.scalars(stmt).first()
+
+        if item:
+            return item.id
+
+        new_item = BookletItem(item_name=item_name)
+        self.session.add(new_item)
+        self.session.flush()
+        return new_item.id
 
     def get_or_create_category(self, category_name: str | None) -> int:
         """Finds a category by name or creates it, returning the ID."""
@@ -29,24 +42,24 @@ class DBActions:
         self.session.flush() # Flush to populate the new ID immediately
         return new_category.id
 
-    def insert_items(self, items: list):
-        """Bulk insert items, ignoring duplicates."""
-        if not items:
+    def insert_embeddings(self, embeddings: list):
+        """Bulk insert embeddings, ignoring duplicates."""
+        if not embeddings:
             return
-        stmt = insert(BookletItem).values(items)
-        stmt = stmt.on_conflict_do_nothing(index_elements=['image_hash'])
+        stmt = insert(BookletEmbedding).values(embeddings)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["image_hash"])
         self.session.execute(stmt)
 
-    def get_all_items(self):
-        """Fetch all booklet items."""
-        stmt = select(BookletItem)
+    def get_all_embeddings(self):
+        """Fetch all booklet embeddings with their linked items."""
+        stmt = select(BookletEmbedding).options(joinedload(BookletEmbedding.item))
         return self.session.scalars(stmt).all()
 
-    def delete_items(self, item_ids: list):
-        """Delete items by ID."""
-        if not item_ids:
+    def delete_embeddings(self, embedding_ids: list):
+        """Delete embeddings by ID."""
+        if not embedding_ids:
             return
-        self.session.execute(delete(BookletItem).where(BookletItem.id.in_(item_ids)))
+        self.session.execute(delete(BookletEmbedding).where(BookletEmbedding.id.in_(embedding_ids)))
 
     def commit(self):
         self.session.commit()
