@@ -24,3 +24,4 @@ certs/
 
 # Sonarlint files
 .sonarlint
+.codex
