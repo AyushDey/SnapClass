@@ -1,226 +1,163 @@
-# SnapClass: Offline Few-Shot Image Classifier
+# SnapClass
 
-**SnapClass** is a lightweight, offline-first image classification API built with FastAPI and PyTorch. It allows you to recognize objects by learning from just a single reference image (few-shot learning), enabling you to update image classes dynamically without retraining.
+SnapClass is an offline-first few-shot image classifier. The backend uses FastAPI, PyTorch, PostgreSQL, and `pgvector` to store image embeddings and classify uploaded images by similarity against reference photos. The repo also includes a small React/Vite frontend for capturing or uploading images and sending them to the API.
 
-## Key Features
+## Repo Layout
 
-- **Zero/Few-Shot Learning**: Classify images based on a set of reference images. Add new classes instantly by just adding a reference photo.
-- **Offline Operation**: Uses a pre-trained **ResNet18** model to generate embeddings locally. No external APIs or heavy GPUs required.
-- **Dynamic References**: Upload new reference images via the API to expand the classifier's knowledge base on the fly.
-- **Unknown Detection**: Automatically categorizes images as "Unknown" if they don't sufficiently match any existing reference class.
+```text
+.
+├── backend/                  # FastAPI API, classifier logic, DB integration, tests
+│   ├── main.py               # FastAPI entry point
+│   ├── classifier.py         # Embedding generation and similarity search
+│   ├── db.py                 # SQLAlchemy engine/session setup
+│   ├── db_actions.py         # Database CRUD helpers
+│   ├── models.py             # ORM models
+│   ├── schema_migrations.py  # DB initialization and legacy migration helpers
+│   ├── tests/tests/          # Pytest suite
+│   └── .env.template         # Backend environment template
+├── frontend/                 # React/Vite UI
+│   └── src/
+├── examples/                 # Sample images for manual testing
+├── postman_collection.json   # Postman collection for API testing
+├── POSTMAN_README.md         # Postman usage guide
+└── Dockerfile                # Backend container image
+```
 
-### How It Works
+## Features
 
-1. **Embedding Generation**: The system uses `ResNet18` (pre-trained on ImageNet) to convert images into dense vector embeddings.
-2. **Persistent Storage (PostgreSQL + pgvector)**: Embeddings and hash metadata are stored in a PostgreSQL database using the `pgvector` extension to allow fast similarity matching and persistence. This means your training data survives restarts.
-3. **Similarity Matching**: When an image is submitted for classification, its embedding is compared against the stored embeddings of reference images using Cosine Similarity.
-4. **Classification**: The class with the best similarity matches is returned.
+- Add new classes from reference images without retraining a model.
+- Classify uploaded images with similarity search against stored embeddings.
+- Store embeddings persistently in PostgreSQL with `pgvector`.
+- Bulk import references from archives using `Category/Label/image` folder layouts.
+- Use the included frontend for webcam capture and manual uploads.
 
 ## Prerequisites
 
 - Python 3.13+
-- PostgreSQL 14+ with the [`pgvector` extension](https://github.com/pgvector/pgvector) installed
-- Dependencies as listed in `pyproject.toml` (managed by `uv` or `pip`).
+- Node.js 20+ and npm
+- PostgreSQL 14+ with the `pgvector` extension available
 
-## Installation
+## Backend Setup
 
-### Method 1: Docker (Recommended for Production)
+1. Create a backend env file from the template:
 
-Run the API using the included Dockerfile.
-
-```bash
-# Build the image
-docker build -t snapclass .
-
-# Run the container (mounting volumes for persistence)
-docker run -p 8000:8000 \
-  -v $(pwd)/references:/app/references \
-  --env-file .env \
-  snapclass
-```
-The API is now running at `http://localhost:8000`. Reference images and the vector database are persisted on the host.
-
-### Method 2: Local Setup
-
-1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
-   cd snapclass
+   cp backend/.env.template backend/.env
    ```
 
-2. **Install Dependencies**:
-   
-   Using `uv` (Recommended):
-   ```bash
-   uv sync
-   ```
-   
-   Using standard `pip`:
-   ```bash
-   pip install "fastapi" "uvicorn" "torch" "torchvision" "pillow" "requests" "numpy" "python-multipart" "psycopg[binary]" "pgvector" "sqlalchemy"
-   ```
+2. Fill in the required database settings in `backend/.env`:
 
-3. **Configure Database**: Create a `.env` file in the root directory based on `.env.template` with your PostgreSQL connection details:
-   ```
-   DB_HOST=localhost
-   DB_PORT=5432
+   ```dotenv
    DB_USER=your_user
    DB_PASSWORD=your_password
    DB_NAME=snapclass
+   DB_PORT=5432
+   DB_HOST=localhost
    ```
-   > **SSL (Remote Hosts):** If `DB_HOST` is anything other than `localhost` / `127.0.0.1`, the engine automatically enables SSL (`sslmode=verify-ca`). Place your certificate files in a `certs/` directory in the project root:
-   > ```
-   > certs/
-   > ├── server-ca.pem
-   > ├── client-cert.pem
-   > └── client-key.pk8
-   > ```
 
-## Running the Application
+3. Install backend dependencies:
 
-Start the FastAPI server:
+   ```bash
+   cd backend
+   uv sync
+   ```
+
+4. Start the API:
+
+   ```bash
+   uv run uvicorn main:app --reload
+   ```
+
+The API will be available at `http://127.0.0.1:8000`.
+
+### Remote PostgreSQL with SSL
+
+If `DB_HOST` is not `localhost` or `127.0.0.1`, the backend enables SSL and expects certificate files inside `backend/certs/`:
+
+```text
+backend/certs/
+├── server-ca.pem
+├── client-cert.pem
+└── client-key.pk8
+```
+
+## Frontend Setup
+
+The frontend is a separate Vite app in `frontend/`.
 
 ```bash
-# Using uv (Recommended)
-uv run uvicorn main:app --reload
-
-# Or using uvicorn directly (if installed in system python)
-uvicorn main:app --reload
+cd frontend
+npm install
+npm run dev
 ```
 
-The API will be accessible at `http://127.0.0.1:8000`.
+By default the UI talks to `http://localhost:8000`, so the backend should be running on that address while you use the frontend.
 
-## API Usage
+## Docker
 
-### 1. Check Status
-**GET /**
-- Returns a welcome message confirming the API is running.
+The included `Dockerfile` builds the backend service only.
 
-### 2. Add a Reference Image
-**POST /add_reference**
-- **Form Fields**:
-  - `label` (string, required): The name of the class (e.g., "binoculars", "rope"). Spaces are automatically replaced with underscores (e.g., "blue sky" → "blue_sky").
-  - `category` (string, optional): A grouping category for the label (e.g., "Tools", "Furniture"). Defaults to `"Uncategorized"` if not provided.
-  - `file` (file): The reference image. Allowed formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`.
+### Build
 
-Example (Python):
-```python
-import requests
-requests.post("http://127.0.0.1:8000/add_reference", 
-              data={"label": "binoculars", "category": "Optics"}, 
-              files={"file": open("binoculars_ref.jpg", "rb")})
+```bash
+docker build -t snapclass .
 ```
 
-### 3. Classify an Image
-**POST /classify**
-- **Form Fields**:
-  - `file` (file): The image to classify. Allowed formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`.
-- **Returns**: JSON object with the predicted class, category name, confidence score, and top matches within the same category.
+### Run
 
-Example Response (known class):
-```json
-{
-    "class": "binoculars",
-    "category_name": "Optics",
-    "confidence": 0.92,
-    "matches": [
-        {"class": "telescope", "score": 0.45}
-    ]
-}
+```bash
+docker run --rm -p 8000:8000 \
+  -v "$(pwd)/backend/references:/app/backend/references" \
+  --env-file backend/.env \
+  snapclass
 ```
 
-Example Response (no match):
-```json
-{
-    "class": "Unknown",
-    "confidence": 0.0,
-    "message": "No references available"
-}
+If you use SSL certificates for a remote database, also mount them into the backend container:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -v "$(pwd)/backend/references:/app/backend/references" \
+  -v "$(pwd)/backend/certs:/app/backend/certs:ro" \
+  --env-file backend/.env \
+  snapclass
 ```
 
-### 4. Bulk Upload References
-**POST /bulk_upload**
-- Upload an archive file (`.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tgz`) containing a nested folder structure of images.
-- Spaces in folder names are automatically replaced with underscores.
-- **Form Fields**:
-  - `file` (file): An archive with the `Category/Label/` structure below.
+## API Endpoints
 
-Expected archive structure (Category → Label → Images):
-```
-references.zip
-└── Furniture/
-    ├── Chair/
-    │   ├── chair1.jpg
-    │   └── chair2.png
-    └── Table/
-        └── table1.jpg
-```
+- `GET /` returns a basic health message.
+- `POST /classify` classifies an uploaded image.
+- `POST /add_reference` stores a new reference image under a label and optional category.
+- `POST /bulk_upload` imports many references from an archive.
+- `POST /refresh` reloads references from disk into memory.
 
-> **Note:** If the archive uses only one level of nesting (just `Label/images`), the archive's filename is used as the category name. Images placed directly at the root of the archive are skipped.
+### Reference Layout
 
-Example Response:
-```json
-{
-    "message": "Bulk upload successful",
-    "labels": {
-        "Chair": 2,
-        "Table": 1
-    },
-    "total_images": 3
-}
+Reference images are stored under `backend/references/` using this structure:
+
+```text
+backend/references/
+└── Category/
+    └── Label/
+        ├── image1.jpg
+        └── image2.png
 ```
 
-### 5. Refresh References
-**POST /refresh**
-- Forces the server to reload all reference images from the `references/` directory. Useful if you manually added files to the folder.
-
-## Auto-Refresh
-
-The API includes a background task that automatically scans the `references/` directory every 24 hours for new folders and images. Any new references added directly to the folder will be loaded automatically without needing to call `/refresh`.
+For bulk uploads, SnapClass also accepts a two-level archive layout (`Label/image`) and uses the archive filename as the category.
 
 ## Testing
 
-### Postman
-This repository includes a Postman Collection for easy manual testing of all endpoints.
-
-1. Install [Postman](https://www.postman.com/downloads/).
-2. Import `postman_collection.json`.
-3. Follow the instructions in `POSTMAN_README.md` to run the tests against your local server.
-
-### Unit Tests & Coverage
-
-The project uses `pytest` with 100% code coverage enforced via CI.
-
-> **Note on Test Isolation:** Tests use a fully mocked database (in-memory SQLite) and mocked ResNet model — **no real PostgreSQL or GPU is needed** to run the test suite.
+Backend tests live under `backend/tests/tests/`.
 
 ```bash
-# Install dev dependencies
+cd backend
 uv sync --all-extras --dev
-
-# Run tests with coverage report
-uv run pytest --cov=. --cov-report=term-missing
-
-# Run the CI check (enforces 100% coverage)
-uv run pytest --cov=. --cov-fail-under=100
+uv run pytest --cov=. --cov-report=term-missing --cov-fail-under=100
 ```
 
-## CI/CD
+The test suite uses mocks for the model and database interactions, so you do not need a running PostgreSQL instance to execute it.
 
-The project uses **GitHub Actions** (`.github/workflows/test.yml`) to automatically run the full test suite with coverage checks on every push or pull request to `main` and `feature` branches.
+## Postman and Examples
 
-## Directory Structure
-
-```
-├── main.py              # FastAPI application entry point and route handlers
-├── classifier.py        # ImageClassifier logic (PyTorch + ResNet18)
-├── db.py                # SQLAlchemy engine and session factory
-├── db_actions.py        # Database CRUD operations (DBActions class)
-├── models.py            # SQLAlchemy ORM models (BookletItem, BookletCategory)
-├── utils.py             # Logging setup utilities
-├── tests/               # Pytest test suite (88 tests, 100% coverage)
-├── references/          # Reference images organized by Category/Label/
-├── .coveragerc          # Coverage configuration
-├── pyproject.toml       # Project metadata and dependencies
-├── uv.lock              # Locked dependency versions
-└── postman_collection.json  # Postman API test collection
-```
+- Import `postman_collection.json` into Postman for manual API testing.
+- See `POSTMAN_README.md` for a step-by-step guide.
+- Sample images for manual testing live in `examples/`.

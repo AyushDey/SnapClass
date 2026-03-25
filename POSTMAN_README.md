@@ -1,16 +1,20 @@
 # SnapClass API - Postman Testing Guide
 
 This guide will help you test the endpoints of the SnapClass API using Postman.
-Note: The SnapClass persistent storage is backed by a local PostgreSQL instance running the pgvector extension.
+Note: The SnapClass backend lives in the `backend/` directory and stores embeddings in PostgreSQL with the `pgvector` extension.
 
 ## 1. Setup
 
 1.  **Install Postman**: If you haven't already, download and install [Postman](https://www.postman.com/downloads/).
 2.  **Ensure API is Running**: Make sure your FastAPI server is running.
     ```bash
-    uvicorn main:app --reload
+    cd backend
+    uv run uvicorn main:app --reload
     # Or with Docker:
-    docker run -p 8000:8000 -v $(pwd)/references:/app/references --env-file .env snapclass
+    docker run -p 8000:8000 \
+      -v $(pwd)/backend/references:/app/backend/references \
+      --env-file backend/.env \
+      snapclass
     ```
     Default URL: `http://127.0.0.1:8000`
 
@@ -66,7 +70,7 @@ The collection "SnapClass API" will appear in your workspace. It uses a collecti
 #### **POST /refresh**
 - Select "Refresh References".
 - Click **Send**.
-- This reloads all images from the `references/` directory into the classifier's memory. Call this if you manually added files to the folder or want to ensure the state is fresh.
+- This reloads all images from the `backend/references/` directory into the classifier's memory. Call this if you manually added files to the folder or want to ensure the state is fresh.
 
 ---
 **Tip**: If your server is running on a different port, click on the Collection name ("SnapClass API"), go to the **Variables** tab, and update the `base_url` value.

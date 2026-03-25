@@ -12,6 +12,8 @@ RUN sh /uv-installer.sh && rm /uv-installer.sh
 
 # Ensure the installed binary is on the `PATH`
 ENV PATH="/root/.local/bin/:$PATH"
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app/backend
 
@@ -27,10 +29,15 @@ RUN uv sync --frozen --no-dev
 ENV PATH="/app/backend/.venv/bin:$PATH"
 
 # Copy source code (explicit listing to avoid accidental inclusion of sensitive files)
-COPY backend/main.py backend/classifier.py backend/db.py backend/db_actions.py backend/models.py backend/utils.py ./
+COPY backend/main.py backend/classifier.py backend/db.py backend/db_actions.py backend/models.py backend/schema_migrations.py backend/utils.py ./
+
+# Ensure the runtime reference directory exists inside the backend working tree
+RUN mkdir -p /app/backend/references
+
+EXPOSE 8000
 
 # Expose volumes for persistence
-VOLUME ["/app/references"]
+VOLUME ["/app/backend/references"]
 
 # Run application
 # Host 0.0.0.0 is crucial for Docker networking
