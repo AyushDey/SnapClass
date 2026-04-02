@@ -1,5 +1,5 @@
 from db import Base
-from sqlalchemy import String, Integer, ForeignKey
+from sqlalchemy import String, Integer, ForeignKey, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -31,3 +31,11 @@ class BookletEmbedding(Base):
 
     item: Mapped[BookletItem] = relationship(back_populates="embeddings")
     category: Mapped[BookletCategory] = relationship(back_populates="embeddings")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    password = Column(String, nullable=False)

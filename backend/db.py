@@ -3,7 +3,6 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy import URL
 from dotenv import load_dotenv
-from pathlib import Path
 
 load_dotenv()
 
@@ -12,6 +11,9 @@ db_user = os.getenv('DB_USER')
 db_name = os.getenv('DB_NAME')
 db_port = int(os.getenv('DB_PORT'))
 db_host = os.getenv('DB_HOST')
+
+# ✅ SSL controlled ONLY by env
+sslmode = os.getenv("DB_SSLMODE", "disable")
 
 DB_URL = URL.create(
     "postgresql+psycopg",
@@ -22,36 +24,25 @@ DB_URL = URL.create(
     database=db_name
 )
 
-# Use SSL certificates when connecting to a remote host
-_is_remote = db_host not in ('localhost', '127.0.0.1')
-
-if _is_remote:
-    BASE_DIR = Path(__file__).parent
-    server_ca   = BASE_DIR / "certs" / "server-ca.pem"
-    client_key  = BASE_DIR / "certs" / "client-key.pk8"
-    client_cert = BASE_DIR / "certs" / "client-cert.pem"
-    _connect_args = {
-        "sslmode": "verify-ca",
-        "sslrootcert": str(server_ca),
-        "sslcert": str(client_cert),
-        "sslkey": str(client_key)
-    }
-else:
-    _connect_args = {}
+# SSL handling
+connect_args = {"sslmode": sslmode}
 
 engine = create_engine(
     DB_URL,
-    connect_args=_connect_args,
+    connect_args=connect_args,
     pool_size=10,
     max_overflow=10,
     pool_timeout=30,
     pool_recycle=1800
 )
 
-# Enable pgvector extension
-with engine.connect() as conn:
-    conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
-    conn.commit()
+# Safe DB init
+try:
+    with engine.connect() as conn:
+        conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
+        conn.commit()
+except Exception as e:
+    print("⚠️ DB connection failed during startup:", e)
 
 class Base(DeclarativeBase):
     pass
