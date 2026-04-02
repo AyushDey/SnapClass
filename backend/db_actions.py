@@ -1,7 +1,8 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert
-from models import BookletItem, BookletCategory, BookletEmbedding
+from models import BookletItem, BookletCategory, BookletEmbedding, User
+from db import sessionLocal
 
 class DBActions:
     """Encapsulates all database interactions for the classifier."""
@@ -71,3 +72,13 @@ class DBActions:
         category = self.session.get(BookletCategory, category_id)
 
         return category.category_name if category else 'Unkown'
+
+    def get_user_by_email(self, email: str):
+        stmt = select(User).where(User.email == email)
+        return self.session.scalars(stmt).first()
+
+    def create_user(self, email: str, password: str):
+        user = User(email=email, password=password)
+        self.session.add(user)
+        self.session.flush()  
+        return user

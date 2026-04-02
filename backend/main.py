@@ -23,9 +23,15 @@ from utils import setup_logger, intercept_uvicorn_logs
 from db import engine, sessionLocal
 from schema_migrations import initialize_database
 
+from middleware.auth_middleware import auth_middleware
+
+
+from auth.routes import router as auth_router
 # =========================================================================
 # Setup & Initialization
 # =========================================================================
+
+
 
 
 
@@ -118,6 +124,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.middleware("http")(auth_middleware)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -275,6 +283,9 @@ def _process_archive(contents: bytes, filename: str, classifier: ImageClassifier
 # =========================================================================
 # API Endpoints
 # =========================================================================
+
+
+app.include_router(auth_router, prefix="/auth")
 
 @app.get("/")
 async def health_check():
