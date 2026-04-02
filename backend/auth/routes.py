@@ -51,8 +51,8 @@ def login(data: LoginRequest, response: Response, db: Session = Depends(get_db))
     access_token = create_access_token({"sub": user.email})
     refresh_token = create_refresh_token({"sub": user.email})
 
-    response.set_cookie("access_token", access_token, httponly=True)
-    response.set_cookie("refresh_token", refresh_token, httponly=True)
+    response.set_cookie("access_token", access_token, httponly=True,secure=True)
+    response.set_cookie("refresh_token", refresh_token, httponly=True,secure=True)
 
     return {"message": "Login successful"}
 
