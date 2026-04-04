@@ -202,67 +202,70 @@ def test_get_category_by_id_not_found(db_session):
 
 def test_initialize_database_migrates_legacy_booklet_items():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-    metadata = MetaData()
+    try:
+        metadata = MetaData()
 
-    category_table = Table(
-        "booklet_category",
-        metadata,
-        Column("id", Integer, primary_key=True),
-        Column("category_name", String),
-    )
-    legacy_items = Table(
-        "booklet_items",
-        metadata,
-        Column("id", Integer, primary_key=True),
-        Column("item_name", String),
-        Column("category_id", Integer),
-        Column("image_hash", String),
-        Column("embedding", PickleType()),
-    )
-    metadata.create_all(engine)
-
-    with engine.begin() as conn:
-        conn.execute(category_table.insert(), [{"id": 1, "category_name": "Tools"}])
-        conn.execute(
-            legacy_items.insert(),
-            [
-                {
-                    "id": 1,
-                    "item_name": "hammer",
-                    "category_id": 1,
-                    "image_hash": "hammer_0",
-                    "embedding": [0.1] * 512,
-                },
-                {
-                    "id": 2,
-                    "item_name": "hammer",
-                    "category_id": 1,
-                    "image_hash": "hammer_1",
-                    "embedding": [0.2] * 512,
-                },
-                {
-                    "id": 3,
-                    "item_name": "wrench",
-                    "category_id": 1,
-                    "image_hash": "wrench_0",
-                    "embedding": [0.3] * 512,
-                },
-            ],
+        category_table = Table(
+            "booklet_category",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("category_name", String),
         )
+        legacy_items = Table(
+            "booklet_items",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("item_name", String),
+            Column("category_id", Integer),
+            Column("image_hash", String),
+            Column("embedding", PickleType()),
+        )
+        metadata.create_all(engine)
 
-    initialize_database(engine)
-    initialize_database(engine)
+        with engine.begin() as conn:
+            conn.execute(category_table.insert(), [{"id": 1, "category_name": "Tools"}])
+            conn.execute(
+                legacy_items.insert(),
+                [
+                    {
+                        "id": 1,
+                        "item_name": "hammer",
+                        "category_id": 1,
+                        "image_hash": "hammer_0",
+                        "embedding": [0.1] * 512,
+                    },
+                    {
+                        "id": 2,
+                        "item_name": "hammer",
+                        "category_id": 1,
+                        "image_hash": "hammer_1",
+                        "embedding": [0.2] * 512,
+                    },
+                    {
+                        "id": 3,
+                        "item_name": "wrench",
+                        "category_id": 1,
+                        "image_hash": "wrench_0",
+                        "embedding": [0.3] * 512,
+                    },
+                ],
+            )
 
-    inspector = inspect(engine)
-    assert "booklet_embeddings" in inspector.get_table_names()
-    assert {column["name"] for column in inspector.get_columns("booklet_items")} == {"id", "item_name"}
+        initialize_database(engine)
+        initialize_database(engine)
 
-    with Session(engine) as session:
-        items = session.scalars(select(BookletItem).order_by(BookletItem.item_name)).all()
-        embeddings = session.scalars(select(BookletEmbedding).order_by(BookletEmbedding.image_hash)).all()
-        embedding_item_names = {embedding.item.item_name for embedding in embeddings}
+        inspector = inspect(engine)
+        assert "booklet_embeddings" in inspector.get_table_names()
+        assert {column["name"] for column in inspector.get_columns("booklet_items")} == {"id", "item_name"}
 
-    assert [item.item_name for item in items] == ["hammer", "wrench"]
-    assert [embedding.image_hash for embedding in embeddings] == ["hammer_0", "hammer_1", "wrench_0"]
-    assert {embedding.booklet_category_id for embedding in embeddings} == {1}
-    assert embedding_item_names == {"hammer", "wrench"}
+        with Session(engine) as session:
+            items = session.scalars(select(BookletItem).order_by(BookletItem.item_name)).all()
+            embeddings = session.scalars(select(BookletEmbedding).order_by(BookletEmbedding.image_hash)).all()
+            embedding_item_names = {embedding.item.item_name for embedding in embeddings}
+
+        assert [item.item_name for item in items] == ["hammer", "wrench"]
+        assert [embedding.image_hash for embedding in embeddings] == ["hammer_0", "hammer_1", "wrench_0"]
+        assert {embedding.booklet_category_id for embedding in embeddings} == {1}
+        assert embedding_item_names == {"hammer", "wrench"}
+    finally:
+        engine.dispose()

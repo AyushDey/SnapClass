@@ -54,16 +54,25 @@ _refresh_task: asyncio.Task | None = None
 # Lifespan & Background Tasks
 # =========================================================================
 
+async def _reload_classifier_references(current_classifier: ImageClassifier) -> list[str]:
+    """Reload references without blocking the event loop."""
+    await run_in_threadpool(current_classifier.load_references)
+    return list(current_classifier.reference_embeddings.keys())
+
+
 async def auto_refresh_task():
     """Background task that refreshes references every 24 hours."""
     while True:
         await asyncio.sleep(24 * 60 * 60)  # 24 hours
         try:
             logger.info("Auto-refresh: Scanning for new folders and images...")
-            if classifier:
-                classifier.load_references()
-                classes = list(classifier.reference_embeddings.keys())
-                logger.info(f"Auto-refresh complete. Classes: {classes}")
+            current_classifier = classifier
+            if current_classifier is None:
+                logger.warning("Auto-refresh skipped because classifier is unavailable.")
+                continue
+
+            classes = await _reload_classifier_references(current_classifier)
+            logger.info(f"Auto-refresh complete. Classes: {classes}")
         except Exception as e:
             logger.error(f"Auto-refresh failed: {e}")
 
@@ -174,7 +183,10 @@ def _extract_archive(contents: bytes, filename: str, dest_dir: Path):
         mode = 'r:gz' if lower_name.endswith((".tar.gz", ".tgz")) else \
                'r:bz2' if lower_name.endswith(".tar.bz2") else 'r'
         with tarfile.open(fileobj=io.BytesIO(contents), mode=mode) as tf:
-            tf.extractall(dest_dir)
+            try:
+                tf.extractall(dest_dir, filter="data")
+            except TypeError:  # pragma: no cover
+                tf.extractall(dest_dir)
 
 
 def _is_valid_archive_file(file_path: Path) -> bool:
@@ -304,8 +316,10 @@ async def classify_image(file: Annotated[UploadFile, File(...)]):
 async def refresh_references():
     """Reloads the reference images from disk."""
     try:
-        classifier.load_references()
-        classes = list(classifier.reference_embeddings.keys())
+        if classifier is None:
+            raise RuntimeError("Classifier unavailable.")
+
+        classes = await _reload_classifier_references(classifier)
         logger.info(f"References refreshed. Classes: {classes}")
         return {"message": "References reloaded", "classes": classes}
     except Exception as e:

@@ -9,10 +9,12 @@ module that exposes the same public names the rest of the code uses.
 
 import sys
 import types
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.pool import StaticPool
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +26,11 @@ class _FakeBase(DeclarativeBase):
     pass
 
 
-_fake_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+_fake_engine = create_engine(
+    "sqlite:///:memory:",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
 _FakeSessionLocal = sessionmaker(bind=_fake_engine, autoflush=False, autocommit=False)
 
 fake_db = types.ModuleType("db")
@@ -59,6 +65,11 @@ if not hasattr(_pg_dialect, "insert"):
 from models import BookletItem, BookletCategory  # noqa: E402 – intentional late import
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """Dispose the module-level fake SQLite engine created during test bootstrap."""
+    _fake_engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # 4.  Fixtures
 # ---------------------------------------------------------------------------
@@ -66,7 +77,11 @@ from models import BookletItem, BookletCategory  # noqa: E402 – intentional la
 @pytest.fixture(scope="function")
 def db_engine():
     """Creates a fresh in-memory SQLite engine per test function."""
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     _FakeBase.metadata.create_all(engine)
     yield engine
     _FakeBase.metadata.drop_all(engine)
@@ -89,6 +104,12 @@ def session_factory(db_engine):
     return sessionmaker(bind=db_engine, autoflush=False, autocommit=False)
 
 
+@pytest.fixture(autouse=True)
+def cleanup_fake_db_engine():
+    yield
+    _fake_engine.dispose()
+
+
 @pytest.fixture
 def mock_classifier():
     """
@@ -105,7 +126,7 @@ def mock_classifier():
 
 
 @pytest.fixture
-def client(mock_classifier, db_engine):
+def client(mock_classifier):
     """
     FastAPI TestClient with the global `classifier` replaced by mock_classifier
     and the lifespan disabled.
@@ -113,7 +134,12 @@ def client(mock_classifier, db_engine):
     from fastapi.testclient import TestClient
     import main
 
+    @asynccontextmanager
+    async def noop_lifespan(app):
+        yield
+
     # Patch the module-level `classifier` and skip the lifespan so we control startup
     with patch.object(main, "classifier", mock_classifier):
-        with TestClient(main.app, raise_server_exceptions=False) as c:
-            yield c
+        with patch.object(main.app.router, "lifespan_context", noop_lifespan):
+            with TestClient(main.app, raise_server_exceptions=False) as c:
+                yield c

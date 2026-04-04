@@ -348,6 +348,15 @@ def test_scan_local_references_skips_non_image_files(session_factory, tmp_path):
     assert result == {}
 
 
+def test_is_valid_image_file_rejects_hidden_image(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+
+    hidden_file = tmp_path / ".hidden.jpg"
+    hidden_file.write_bytes(b"fake image bytes")
+
+    assert clf._is_valid_image_file(hidden_file) is False
+
+
 def test_scan_local_references_manual_updates_merge(session_factory, tmp_path):
     """manual_updates for new hash gets merged in."""
     clf = _make_classifier(session_factory, tmp_path)

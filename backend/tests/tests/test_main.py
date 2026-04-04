@@ -41,6 +41,17 @@ def _make_tar_bytes(file_tree: dict, mode="w") -> bytes:
     return buf.getvalue()
 
 
+def _completed_future(loop: object):
+    future = loop.create_future()
+    future.set_result(None)
+    return future
+
+
+def _close_coro_and_return_future(loop, coro):
+    coro.close()
+    return _completed_future(loop)
+
+
 # ---------------------------------------------------------------------------
 # Helper functions (unit tested separately from the ASGI app)
 # ---------------------------------------------------------------------------
@@ -205,6 +216,19 @@ def test_extract_archive_tar_bz2(tmp_path):
     assert (tmp_path / "image.png").exists()
 
 
+def test_extract_archive_tar_uses_data_filter(tmp_path):
+    import main
+
+    fake_tf = MagicMock()
+    fake_tf.__enter__.return_value = fake_tf
+    fake_tf.__exit__.return_value = None
+
+    with patch("main.tarfile.open", return_value=fake_tf):
+        main._extract_archive(b"tar bytes", "upload.tar", tmp_path)
+
+    fake_tf.extractall.assert_called_once_with(tmp_path, filter="data")
+
+
 # ---------------------------------------------------------------------------
 # _process_archive
 # ---------------------------------------------------------------------------
@@ -325,18 +349,35 @@ def test_refresh_success(client, mock_classifier):
     with patch.object(main, "classifier", mock_classifier):
         mock_classifier.load_references.return_value = None
         mock_classifier.reference_embeddings = {"chair": [], "table": []}
-        resp = client.post("/refresh")
+        with patch("main.run_in_threadpool", new_callable=AsyncMock) as mock_threadpool:
+            mock_threadpool.side_effect = lambda fn: fn()
+            resp = client.post("/refresh")
     assert resp.status_code == 200
     data = resp.json()
     assert "classes" in data
+    mock_threadpool.assert_awaited_once_with(mock_classifier.load_references)
 
 
 def test_refresh_internal_error(client, mock_classifier):
     import main
     mock_classifier.load_references.side_effect = RuntimeError("db gone")
     with patch.object(main, "classifier", mock_classifier):
-        resp = client.post("/refresh")
+        with patch("main.run_in_threadpool", new_callable=AsyncMock) as mock_threadpool:
+            mock_threadpool.side_effect = lambda fn: fn()
+            resp = client.post("/refresh")
     assert resp.status_code == 500
+    mock_threadpool.assert_awaited_once_with(mock_classifier.load_references)
+
+
+def test_refresh_classifier_unavailable(client):
+    import main
+
+    with patch.object(main, "classifier", None):
+        with patch("main.run_in_threadpool", new_callable=AsyncMock) as mock_threadpool:
+            resp = client.post("/refresh")
+
+    assert resp.status_code == 500
+    mock_threadpool.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +501,7 @@ def test_bulk_upload_internal_error(client, mock_classifier):
 # ---------------------------------------------------------------------------
 
 def test_auto_refresh_task_calls_load_references():
-    """auto_refresh_task calls classifier.load_references() after sleep."""
+    """auto_refresh_task refreshes via the threadpool after sleep."""
     import asyncio
     import main
 
@@ -470,11 +511,14 @@ def test_auto_refresh_task_calls_load_references():
     async def run():
         with patch.object(main, "classifier", mock_clf):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                # Make it run once then raise CancelledError to exit the loop
-                mock_sleep.side_effect = [None, asyncio.CancelledError()]
-                with pytest.raises(asyncio.CancelledError):
-                    await main.auto_refresh_task()
+                with patch("main.run_in_threadpool", new_callable=AsyncMock) as mock_threadpool:
+                    mock_threadpool.side_effect = lambda fn: fn()
+                    # Make it run once then raise CancelledError to exit the loop
+                    mock_sleep.side_effect = [None, asyncio.CancelledError()]
+                    with pytest.raises(asyncio.CancelledError):
+                        await main.auto_refresh_task()
 
+        mock_threadpool.assert_awaited_once_with(mock_clf.load_references)
         mock_clf.load_references.assert_called_once()
 
     asyncio.run(run())
@@ -492,9 +536,13 @@ def test_auto_refresh_task_handles_exception():
     async def run():
         with patch.object(main, "classifier", mock_clf):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                mock_sleep.side_effect = [None, None, asyncio.CancelledError()]
-                with pytest.raises(asyncio.CancelledError):
-                    await main.auto_refresh_task()
+                with patch("main.run_in_threadpool", new_callable=AsyncMock) as mock_threadpool:
+                    mock_threadpool.side_effect = lambda fn: fn()
+                    mock_sleep.side_effect = [None, None, asyncio.CancelledError()]
+                    with pytest.raises(asyncio.CancelledError):
+                        await main.auto_refresh_task()
+
+        assert mock_threadpool.await_count == 2
 
     asyncio.run(run())
 
@@ -507,14 +555,14 @@ def test_lifespan_startup_classifier_init_success():
     mock_clf = MagicMock()
 
     async def run():
-        # create_task must return a real awaitable Future for the `await _refresh_task` in shutdown
         loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        future.set_result(None)  # Already done
 
         with patch("main.ImageClassifier", return_value=mock_clf):
             with patch("main.intercept_uvicorn_logs"):
-                with patch("main.asyncio.create_task", return_value=future):
+                with patch(
+                    "main.asyncio.create_task",
+                    side_effect=lambda coro: _close_coro_and_return_future(loop, coro),
+                ):
                     async with main.lifespan(main.app):
                         pass
 
@@ -528,12 +576,13 @@ def test_lifespan_startup_classifier_init_failure():
 
     async def run():
         loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        future.set_result(None)
 
         with patch("main.ImageClassifier", side_effect=RuntimeError("model fail")):
             with patch("main.intercept_uvicorn_logs"):
-                with patch("main.asyncio.create_task", return_value=future):
+                with patch(
+                    "main.asyncio.create_task",
+                    side_effect=lambda coro: _close_coro_and_return_future(loop, coro),
+                ):
                     async with main.lifespan(main.app):
                         pass  # Should not raise
 
@@ -549,15 +598,17 @@ def test_lifespan_shutdown_cancels_task():
 
     async def run():
         loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        future.set_result(None)
+        future = _completed_future(loop)
         # Wrap cancel to record call
         original_cancel = future.cancel
         future.cancel = lambda *a, **kw: cancelled.append(True) or original_cancel(*a, **kw)
 
         with patch("main.ImageClassifier", return_value=MagicMock()):
             with patch("main.intercept_uvicorn_logs"):
-                with patch("main.asyncio.create_task", return_value=future):
+                with patch(
+                    "main.asyncio.create_task",
+                    side_effect=lambda coro: coro.close() or future,
+                ):
                     async with main.lifespan(main.app):
                         pass
 
@@ -578,9 +629,11 @@ def test_auto_refresh_task_classifier_none():
     async def run():
         with patch.object(main, "classifier", None):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                mock_sleep.side_effect = [None, asyncio.CancelledError()]
-                with pytest.raises(asyncio.CancelledError):
-                    await main.auto_refresh_task()
+                with patch("main.run_in_threadpool", new_callable=AsyncMock) as mock_threadpool:
+                    mock_sleep.side_effect = [None, asyncio.CancelledError()]
+                    with pytest.raises(asyncio.CancelledError):
+                        await main.auto_refresh_task()
+        mock_threadpool.assert_not_awaited()
         # No classifier → load_references should never be called (no AttributeError either)
 
     asyncio.run(run())
@@ -599,7 +652,7 @@ def test_lifespan_shutdown_no_refresh_task():
         with patch("main.ImageClassifier", return_value=MagicMock()):
             with patch("main.intercept_uvicorn_logs"):
                 # Return None so _refresh_task stays None after create_task
-                with patch("main.asyncio.create_task", return_value=None):
+                with patch("main.asyncio.create_task", side_effect=lambda coro: coro.close() or None):
                     async with main.lifespan(main.app):
                         pass  # Should complete without error
 
@@ -638,4 +691,3 @@ def test_process_archive_duplicate_dest_dir_key(tmp_path, mock_classifier):
 
     updates, counts = _process_archive(zip_bytes, "upload.zip", mock_classifier)
     assert counts.get("Label", 0) == 2  # both images counted
-

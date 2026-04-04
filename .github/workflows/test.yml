@@ -6,12 +6,10 @@ permissions:
 on:
   push:
     branches:
-      - main
-      - feature
+      - "**"
   pull_request:
     branches:
-      - main
-      - feature
+      - "**"
 
 jobs:
   test:
@@ -29,6 +27,6 @@ jobs:
       working-directory: backend
       run: uv sync --all-extras --dev
 
-    - name: Run tests with coverage
+    - name: Run backend tests with coverage gate
       working-directory: backend
-      run: uv run pytest --cov=. --cov-report=term-missing --cov-fail-under=100
+      run: uv run pytest -q tests --cov-fail-under=100
