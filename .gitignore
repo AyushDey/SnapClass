@@ -25,3 +25,5 @@ certs/
 # Sonarlint files
 .sonarlint
 .codex
+backend/.python-version
+.DS_Store
