@@ -43,3 +43,7 @@ exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
 ]
+
+[tool.ty.environment]
+python = ".venv/bin/python"
+
