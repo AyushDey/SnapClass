@@ -13,7 +13,7 @@ SnapClass is an offline-first few-shot image classifier. The backend uses FastAP
 │   ├── db_actions.py         # Database CRUD helpers
 │   ├── models.py             # ORM models
 │   ├── schema_migrations.py  # DB initialization and legacy migration helpers
-│   ├── tests/tests/          # Pytest suite
+│   ├── tests/                # Pytest suite
 │   └── .env.template         # Backend environment template
 ├── frontend/                 # React/Vite UI
 │   └── src/
@@ -146,7 +146,7 @@ For bulk uploads, SnapClass also accepts a two-level archive layout (`Label/imag
 
 ## Testing
 
-Backend tests live under `backend/tests/tests/`.
+Backend tests live under `backend/tests/`.
 
 ```bash
 cd backend

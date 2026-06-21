@@ -29,4 +29,16 @@ jobs:
 
     - name: Run backend tests with coverage gate
       working-directory: backend
-      run: uv run --frozen --no-build pytest -q tests --cov-fail-under=100
+      run: uv run --frozen --no-build pytest -q tests --cov=. --cov-report=xml:coverage.xml --cov-fail-under=100
+
+    - name: Run SonarQube Coverage
+      uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      with:
+        projectBaseDir: backend
+        args:
+          -Dsonar.projectKey=AyushDey_SnapClass
+          -Dsonar.tests=tests
+          -Dsonar.python.coverage.reportPaths=coverage.xml
+          
