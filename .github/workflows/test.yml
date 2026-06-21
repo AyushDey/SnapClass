@@ -25,8 +25,8 @@ jobs:
 
     - name: Install dependencies
       working-directory: backend
-      run: uv sync --all-extras --dev
+      run: uv sync --frozen --no-build --all-extras --dev
 
     - name: Run backend tests with coverage gate
       working-directory: backend
-      run: uv run pytest -q tests --cov-fail-under=100
+      run: uv run --frozen --no-build pytest -q tests --cov-fail-under=100
