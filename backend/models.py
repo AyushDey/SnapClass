@@ -1,5 +1,5 @@
 from db import Base
-from sqlalchemy import String, Integer, ForeignKey
+from sqlalchemy import String, Integer, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -31,3 +31,13 @@ class BookletEmbedding(Base):
 
     item: Mapped[BookletItem] = relationship(back_populates="embeddings")
     category: Mapped[BookletCategory] = relationship(back_populates="embeddings")
+
+    __table_args__ = (
+        Index(
+            "booklet_embeddings_hnsw_idx",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"}
+        ),
+    )
+

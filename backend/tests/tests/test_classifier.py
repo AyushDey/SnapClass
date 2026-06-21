@@ -704,3 +704,265 @@ def test_build_search_index_duplicate_labels(session_factory, tmp_path):
     clf._build_search_index([item1, item2])
     # Both embeddings should be stored under the same label key
     assert len(clf.reference_embeddings["pen"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Production classify path tests (No in-memory search matrix)
+# ---------------------------------------------------------------------------
+
+def test_classify_production_path_success(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf._clear_memory()
+
+    # Populate DB with a few different items
+    db_session = session_factory()
+    try:
+        from models import BookletCategory, BookletItem, BookletEmbedding
+        cat = BookletCategory(category_name="Tools")
+        db_session.add(cat)
+        db_session.flush()
+
+        # Item 1: hammer
+        item_hammer = BookletItem(item_name="hammer")
+        db_session.add(item_hammer)
+        db_session.flush()
+        emb_hammer = BookletEmbedding(
+            booklet_item_id=item_hammer.id,
+            booklet_category_id=cat.id,
+            image_hash="hammer_0",
+            embedding=[1.0] + [0.0] * 511
+        )
+        db_session.add(emb_hammer)
+
+        # Item 2: wrench (same category)
+        item_wrench = BookletItem(item_name="wrench")
+        db_session.add(item_wrench)
+        db_session.flush()
+        emb_wrench = BookletEmbedding(
+            booklet_item_id=item_wrench.id,
+            booklet_category_id=cat.id,
+            image_hash="wrench_0",
+            embedding=[0.0, 1.0] + [0.0] * 510
+        )
+        db_session.add(emb_wrench)
+
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    # Mock get_embeddings to return [1.0] + [0.0]*511 for the 3 scales
+    fake_embs = [[1.0] + [0.0] * 511] * 3
+    with patch.object(clf, "get_embeddings", return_value=fake_embs):
+        result = clf.classify(_make_rgb_image(), threshold=0.1)
+
+    assert result["class"] == "hammer"
+    assert result["category_name"] == "Tools"
+    assert len(result["matches"]) == 1
+    assert result["matches"][0]["class"] == "wrench"
+
+
+def test_classify_production_path_below_threshold(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf._clear_memory()
+
+    db_session = session_factory()
+    try:
+        from models import BookletCategory, BookletItem, BookletEmbedding
+        cat = BookletCategory(category_name="Tools")
+        db_session.add(cat)
+        db_session.flush()
+
+        item = BookletItem(item_name="hammer")
+        db_session.add(item)
+        db_session.flush()
+        emb = BookletEmbedding(
+            booklet_item_id=item.id,
+            booklet_category_id=cat.id,
+            image_hash="hammer_0",
+            embedding=[0.1] * 512
+        )
+        db_session.add(emb)
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    # Low score query
+    fake_embs = [[0.0] * 512] * 3
+    with patch.object(clf, "get_embeddings", return_value=fake_embs):
+        result = clf.classify(_make_rgb_image(), threshold=0.9)
+
+    assert result["class"] == "Unknown"
+    assert result["confidence"] == 0.0
+
+
+def test_classify_production_path_empty_scores(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf._clear_memory()
+
+    db_session = session_factory()
+    try:
+        from models import BookletCategory, BookletItem, BookletEmbedding
+        cat = BookletCategory(category_name="Tools")
+        db_session.add(cat)
+        db_session.flush()
+
+        item = BookletItem(item_name="hammer")
+        db_session.add(item)
+        db_session.flush()
+        emb = BookletEmbedding(
+            booklet_item_id=item.id,
+            booklet_category_id=cat.id,
+            image_hash="hammer_0",
+            embedding=[0.5] * 512
+        )
+        db_session.add(emb)
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    # If search_similar_embeddings returns empty list
+    with patch.object(clf, "get_embeddings", return_value=[[0.5]*512]*3):
+        from db_actions import DBActions
+        with patch.object(DBActions, "search_similar_embeddings", return_value=[]):
+            result = clf.classify(_make_rgb_image())
+            assert result == {'class': 'Unknown Image'}
+
+
+# ---------------------------------------------------------------------------
+# reference_embeddings property tests
+# ---------------------------------------------------------------------------
+
+def test_reference_embeddings_property(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+
+    # 1. Test read from DB dynamically
+    db_session = session_factory()
+    try:
+        from models import BookletCategory, BookletItem, BookletEmbedding
+        cat = BookletCategory(category_name="Tools")
+        db_session.add(cat)
+        db_session.flush()
+
+        item = BookletItem(item_name="hammer")
+        db_session.add(item)
+        db_session.flush()
+
+        emb1 = BookletEmbedding(
+            booklet_item_id=item.id,
+            booklet_category_id=cat.id,
+            image_hash="hammer_0",
+            embedding=[0.7] * 512
+        )
+        db_session.add(emb1)
+        emb2 = BookletEmbedding(
+            booklet_item_id=item.id,
+            booklet_category_id=cat.id,
+            image_hash="hammer_1",
+            embedding=[0.8] * 512
+        )
+        db_session.add(emb2)
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    # Clear any overrides/matrix and force DB lookup
+    clf._clear_memory()
+    clf._reference_embeddings_override = None
+    ref_embs = clf.reference_embeddings
+    assert "hammer" in ref_embs
+    assert len(ref_embs["hammer"]) == 2
+    assert ref_embs["hammer"][0] == [0.7] * 512
+    assert ref_embs["hammer"][1] == [0.8] * 512
+
+    # 2. Test setter override
+    clf.reference_embeddings = {"custom": [[1.0] * 512]}
+    assert clf.reference_embeddings == {"custom": [[1.0] * 512]}
+
+
+# ---------------------------------------------------------------------------
+# load_references postgresql branch test
+# ---------------------------------------------------------------------------
+
+def test_load_references_postgresql_dialect(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf.references_dir = tmp_path
+
+    # Mock DB dialect name as postgresql
+    from db_actions import DBActions
+
+    # We mock DBActions session bind dialect name
+    mock_embeddings = [_make_embedding_record("pen", 1, "pen_0")]
+
+    with patch.object(clf, "_scan_local_references", return_value={"pen": {"path": "/x", "label": "pen", "category": "Tools"}}):
+        with patch.object(DBActions, "get_all_embeddings", return_value=mock_embeddings):
+            # We mock the bind.dialect.name
+            with patch("sqlalchemy.engine.interfaces.Dialect") as mock_dialect:
+                mock_dialect.name = "postgresql"
+                
+                # Mock session factory to return a session with this dialect name
+                db_session = session_factory()
+                db_session.bind.dialect = mock_dialect
+                
+                with patch.object(clf, "session_factory", return_value=db_session):
+                    clf.load_references()
+                    
+                    # Since it is postgresql dialect, search_matrix should NOT be built in memory
+                    assert clf.search_matrix is None
+
+
+def test_classify_production_path_matches_limit_break(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf._clear_memory()
+
+    db_session = session_factory()
+    try:
+        from models import BookletCategory, BookletItem, BookletEmbedding
+        cat = BookletCategory(category_name="Tools")
+        db_session.add(cat)
+        db_session.flush()
+
+        # Insert 8 items, each with 1 embedding
+        # 1 best match (item0) + 7 other matches (item1 to item7)
+        for i in range(8):
+            item = BookletItem(item_name=f"item{i}")
+            db_session.add(item)
+            db_session.flush()
+            
+            # Use distinct one-hot embedding for each item
+            vec = [0.0] * 512
+            vec[i] = 1.0
+            
+            emb = BookletEmbedding(
+                booklet_item_id=item.id,
+                booklet_category_id=cat.id,
+                image_hash=f"hash_{i}",
+                embedding=vec
+            )
+            db_session.add(emb)
+            
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    # Query with a vector that is very close to item0, but has some overlap with all others
+    # so they all get calculated with a positive score > threshold
+    query = [1.0] + [0.1] * 7 + [0.0] * 504
+    
+    with patch.object(clf, "get_embeddings", return_value=[query] * 3):
+        result = clf.classify(_make_rgb_image(), threshold=0.01)
+
+    assert result["class"] == "item0"
+    # Matches list should be capped at 5
+    assert len(result["matches"]) == 5
+
+
+def test_classify_production_path_propagates_exception(session_factory, tmp_path):
+    clf = _make_classifier(session_factory, tmp_path)
+    clf._clear_memory()
+
+    # Make get_embeddings raise an exception, which should be caught and raised by classify()
+    with patch.object(clf, "get_embeddings", side_effect=ValueError("Classification test error")):
+        with pytest.raises(ValueError, match="Classification test error"):
+            clf.classify(_make_rgb_image())
+
+

@@ -272,3 +272,129 @@ def test_initialize_database_migrates_legacy_booklet_items():
         assert embedding_item_names == {"hammer", "wrench"}
     finally:
         engine.dispose()
+
+
+def test_initialize_database_migrates_legacy_booklet_items_empty():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    try:
+        metadata = MetaData()
+
+        category_table = Table(
+            "booklet_category",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("category_name", String),
+        )
+        legacy_items = Table(
+            "booklet_items",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("item_name", String),
+            Column("category_id", Integer),
+            Column("image_hash", String),
+            Column("embedding", PickleType()),
+        )
+        metadata.create_all(engine)
+
+        with engine.begin() as conn:
+            conn.execute(category_table.insert(), [{"id": 1, "category_name": "Tools"}])
+
+        initialize_database(engine)
+
+        inspector = inspect(engine)
+        assert "booklet_embeddings" in inspector.get_table_names()
+        assert {column["name"] for column in inspector.get_columns("booklet_items")} == {"id", "item_name"}
+
+        with Session(engine) as session:
+            items = session.scalars(select(BookletItem)).all()
+            embeddings = session.scalars(select(BookletEmbedding)).all()
+
+        assert len(items) == 0
+        assert len(embeddings) == 0
+    finally:
+        engine.dispose()
+
+
+
+# ---------------------------------------------------------------------------
+# search_similar_embeddings
+# ---------------------------------------------------------------------------
+
+def test_search_similar_embeddings_fallback(db_session):
+    cat = BookletCategory(category_name="Colors")
+    db_session.add(cat)
+    db_session.flush()
+    
+    # We create two embeddings. One aligned with [1.0, 0.0, 0.0], one aligned with [0.0, 1.0, 0.0]
+    # We will search with [1.0, 0.0, 0.0]
+    emb1 = _create_embedding(db_session, "red", cat.id, "red_hash", [1.0, 0.0, 0.0])
+    emb2 = _create_embedding(db_session, "green", cat.id, "green_hash", [0.0, 1.0, 0.0])
+    
+    actions = DBActions(db_session)
+    # Search with Red vector
+    matches = actions.search_similar_embeddings([1.0, 0.0, 0.0], limit=5)
+    
+    assert len(matches) == 2
+    # RED should be first (distance = 0.0)
+    assert matches[0].item.item_name == "red"
+    assert abs(matches[0].distance) < 1e-5
+    
+    # GREEN should be second (distance = 1.0 since it is orthogonal)
+    assert matches[1].item.item_name == "green"
+    assert abs(matches[1].distance - 1.0) < 1e-5
+
+
+def test_search_similar_embeddings_zero_norm(db_session):
+    cat = BookletCategory(category_name="Colors")
+    db_session.add(cat)
+    db_session.flush()
+    
+    emb1 = _create_embedding(db_session, "zero", cat.id, "zero_hash", [0.0, 0.0, 0.0])
+    actions = DBActions(db_session)
+    matches = actions.search_similar_embeddings([0.0, 0.0, 0.0], limit=5)
+    assert len(matches) == 1
+    assert matches[0].item.item_name == "zero"
+
+
+def test_search_similar_embeddings_postgresql(db_session):
+    from unittest.mock import MagicMock
+    from sqlalchemy.orm.attributes import InstrumentedAttribute
+    
+    # Monkeypatch InstrumentedAttribute
+    original_cosine_distance = getattr(InstrumentedAttribute, "cosine_distance", None)
+    
+    # Return a valid column expression so SQLAlchemy select() doesn't fail validation
+    mock_cosine_distance = MagicMock(return_value=BookletEmbedding.id)
+    InstrumentedAttribute.cosine_distance = mock_cosine_distance
+    
+    try:
+        dialect_mock = MagicMock()
+        dialect_mock.name = "postgresql"
+        
+        db_session.bind = MagicMock()
+        db_session.bind.dialect = dialect_mock
+        
+        mock_embedding = MagicMock(spec=BookletEmbedding)
+        mock_embedding.item = MagicMock()
+        mock_embedding.item.item_name = "postgres_item"
+        
+        mock_execute = MagicMock()
+        mock_execute.all.return_value = [(mock_embedding, 0.15)]
+        db_session.execute = MagicMock(return_value=mock_execute)
+        
+        actions = DBActions(db_session)
+        res = actions.search_similar_embeddings([0.1]*512, limit=5)
+        
+        assert len(res) == 1
+        assert res[0] == mock_embedding
+        assert res[0].distance == 0.15
+        mock_cosine_distance.assert_called_once()
+    finally:
+        if original_cosine_distance is None:
+            if hasattr(InstrumentedAttribute, "cosine_distance"):
+                delattr(InstrumentedAttribute, "cosine_distance")
+        else:
+            InstrumentedAttribute.cosine_distance = original_cosine_distance
+
+
+

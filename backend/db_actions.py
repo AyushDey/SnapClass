@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert
+import numpy as np
 from models import BookletItem, BookletCategory, BookletEmbedding
 
 class DBActions:
@@ -78,3 +79,47 @@ class DBActions:
         category = self.session.get(BookletCategory, category_id)
 
         return category.category_name if category else 'Unkown'
+
+    def search_similar_embeddings(self, query_vector: list[float], limit: int = 100) -> list[BookletEmbedding]:
+        """Search similar embeddings directly in PostgreSQL (using pgvector) or fallback to in-memory for SQLite."""
+        if self.session.bind.dialect.name == "postgresql":
+            stmt = (
+                select(
+                    BookletEmbedding,
+                    BookletEmbedding.embedding.cosine_distance(query_vector).label("distance")
+                )
+                .options(joinedload(BookletEmbedding.item))
+                .order_by("distance")
+                .limit(limit)
+            )
+            rows = self.session.execute(stmt).all()
+            results = []
+            for row in rows:
+                emb = row[0]
+                emb.distance = row[1]
+                results.append(emb)
+            return results
+        else:
+            # Fallback for SQLite / tests: fetch all and compute cosine distance in Python/NumPy
+            embeddings = self.get_all_embeddings()
+            results = []
+            qv = np.array(query_vector)
+            qv_norm = np.linalg.norm(qv)
+            if qv_norm == 0:
+                qv_norm = 1.0
+            
+            for emb in embeddings:
+                ev = np.array(emb.embedding)
+                ev_norm = np.linalg.norm(ev)
+                if ev_norm == 0:
+                    ev_norm = 1.0
+                
+                sim = np.dot(qv, ev) / (qv_norm * ev_norm)
+                dist = 1.0 - sim
+                results.append((emb, dist))
+                
+            results.sort(key=lambda x: x[1])
+            for emb, dist in results[:limit]:
+                emb.distance = dist
+            return [emb for emb, dist in results[:limit]]
+
