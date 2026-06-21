@@ -39,6 +39,7 @@ jobs:
         projectBaseDir: backend
         args:
           -Dsonar.projectKey=AyushDey_SnapClass
+          -Dsonar.organization=ayushdey
           -Dsonar.tests=tests
           -Dsonar.python.coverage.reportPaths=coverage.xml
           
