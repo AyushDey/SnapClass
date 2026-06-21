@@ -11,7 +11,14 @@ class DBActions:
     def get_existing_hashes(self) -> set:
         """Fetch set of all image hashes currently in the DB."""
         stmt = select(BookletEmbedding.image_hash)
-        return {row[0] for row in self.session.execute(stmt).fetchall()}
+        hashes = set()
+        for row in self.session.execute(stmt).fetchall():
+            h = row[0]
+            if "_" in h:
+                hashes.add(h.rsplit("_", 1)[0])
+            else:
+                hashes.add(h)
+        return hashes
 
     def get_or_create_item(self, item_name: str) -> int:
         """Finds an item by name or creates it, returning the ID."""

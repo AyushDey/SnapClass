@@ -38,9 +38,12 @@ def test_get_existing_hashes_with_data(db_session):
     db_session.add(cat)
     db_session.flush()
     _create_embedding(db_session, "apple", cat.id, "hash1", [0.1] * 512)
+    _create_embedding(db_session, "banana", cat.id, "hash2_0", [0.2] * 512)
 
     actions = DBActions(db_session)
-    assert "hash1" in actions.get_existing_hashes()
+    existing = actions.get_existing_hashes()
+    assert "hash1" in existing
+    assert "hash2" in existing
 
 
 # ---------------------------------------------------------------------------
