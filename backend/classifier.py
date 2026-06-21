@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from db_actions import DBActions
 
 logger = setup_logger("snapclass.classifier")
-
+UNKOWN_MESSAGE="No references available"
 class ImageClassifier:
     def __init__(self, session_factory, references_dir: str | Path = "references"):
         self.session_factory = session_factory
@@ -179,7 +179,7 @@ class ImageClassifier:
             from sqlalchemy import select
             any_embeddings = db_session.scalars(select(BookletEmbedding)).first() is not None
             if not any_embeddings:
-                return {"class": "Unknown", "confidence": 0.0, "message": "No references available"}
+                return {"class": "Unknown", "confidence": 0.0, "message": UNKOWN_MESSAGE}
             
             scores = {}
             for emb in embs_list:
@@ -225,7 +225,7 @@ class ImageClassifier:
                     "matches": matches_list
                 }
             else:
-                response = {'class': 'Unknown', "confidence": 0.0, "message": "No references available"}
+                response = {'class': 'Unknown', "confidence": 0.0, "message": UNKOWN_MESSAGE}
                 
             return response
         except Exception as e:
