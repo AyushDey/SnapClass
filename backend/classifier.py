@@ -30,6 +30,7 @@ class ImageClassifier:
         # Cache of the last full disk scan so fast-path manual_updates can
         # skip re-hashing the entire references directory.
         self._cached_active_files: dict = {}
+        self.last_sync_stats: dict = {"added": 0, "removed": 0, "total": 0}
 
         # We apply 3 augmentations. Each is run twice -> 6 augmented + 1 original = 7 images per upload
         self._augmentations = [
@@ -358,10 +359,21 @@ class ImageClassifier:
 
                 if not active_hashes:
                     self._clear_memory()
-                    return
+                    self.last_sync_stats = {"added": 0, "removed": 0, "total": 0}
+                    return self.last_sync_stats
 
-                self._sync_new_references(db_actions, active_files, active_hashes)
-                self._prune_and_load_references(db_actions, active_files, active_hashes)
+                raw_added = self._sync_new_references(db_actions, active_files, active_hashes)
+                added_count = raw_added if isinstance(raw_added, int) else 0
+
+                raw_removed = self._prune_and_load_references(db_actions, active_files, active_hashes)
+                removed_count = raw_removed if isinstance(raw_removed, int) else 0
+
+                self.last_sync_stats = {
+                    "added": added_count,
+                    "removed": removed_count,
+                    "total": len(active_files),
+                }
+                return self.last_sync_stats
 
             except Exception as e:
                 logger.exception(f"Database error during load_references: {e}")
@@ -375,7 +387,7 @@ class ImageClassifier:
         missing_hashes = active_hashes - existing_hashes
 
         if not missing_hashes:
-            return
+            return 0
 
         logger.info(f"Preparing to compute embeddings for {len(missing_hashes)} new source files...")
 
@@ -443,6 +455,7 @@ class ImageClassifier:
         db_actions.insert_embeddings(new_embeddings)
         db_actions.commit()
         logger.info(f"Successfully inserted {len(new_embeddings)} new embeddings.")
+        return len(missing_hashes)
 
     def _prune_and_load_references(self, db_actions: DBActions, active_files: dict, active_hashes: set):
         """
@@ -473,7 +486,9 @@ class ImageClassifier:
         if isinstance(dialect_name, Mock) or dialect_name == "sqlite":
             self._build_search_index(valid_embeddings)
         else:
+            self._reference_embeddings_override = None
             logger.info(f"References synchronized in database. Total embeddings: {len(valid_embeddings)}")
+        return len(del_ids)
 
     def _sync_embedding_category(
         self,

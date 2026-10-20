@@ -27,3 +27,8 @@ certs/
 .codex
 backend/.python-version
 .DS_Store
+.coverage
+htmlcov/
+*.zip
+.agents/
+*skills-lock.json

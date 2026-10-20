@@ -319,8 +319,16 @@ async def refresh_references():
             raise RuntimeError("Classifier unavailable.")
 
         classes = await _reload_classifier_references(classifier)
-        logger.info(f"References refreshed. Classes: {classes}")
-        return {"message": "References reloaded", "classes": classes}
+        stats = getattr(classifier, "last_sync_stats", {})
+        added = stats.get("added", 0)
+        removed = stats.get("removed", 0)
+        logger.info(f"References refreshed. Classes: {classes}, Added: {added}, Removed: {removed}")
+        return {
+            "message": "References reloaded",
+            "classes": classes,
+            "added": added,
+            "removed": removed,
+        }
     except Exception as e:
         logger.error(f"Error refreshing references: {e}")
         return JSONResponse(status_code=500, content={"error": "Failed to refresh references."})
