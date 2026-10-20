@@ -30,5 +30,3 @@ backend/.python-version
 .coverage
 htmlcov/
 *.zip
-.agents/
-*skills-lock.json

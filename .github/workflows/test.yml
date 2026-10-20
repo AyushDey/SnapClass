@@ -1,7 +1,7 @@
-name: Tests
+name: Tests & Tagging
 
 permissions:
-  contents: read
+  contents: write
 
 on:
   push:
@@ -20,11 +20,12 @@ jobs:
       with:
         fetch-depth: 0
 
-
     - name: Install uv
       uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8
       with:
         python-version: "3.13"
+        enable-cache: true
+        cache-dependency-glob: "backend/uv.lock"
 
     - name: Install dependencies
       working-directory: backend
@@ -39,6 +40,14 @@ jobs:
       with:
         bun-version: latest
 
+    - name: Cache Bun dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.bun/install/cache
+        key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-bun-
+
     - name: Install frontend dependencies
       working-directory: frontend
       run: bun install --frozen-lockfile
@@ -46,4 +55,28 @@ jobs:
     - name: Run frontend UI test cases
       working-directory: frontend
       run: bun test test/
+
+    - name: Auto-tag version on main
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        FIRST_LINE=$(echo "$COMMIT_MSG" | head -n 1)
+
+        # Regex match for feat(vX.Y.Z), fix(vX.Y.Z), release(vX.Y.Z), chore(vX.Y.Z)
+        if echo "$FIRST_LINE" | grep -Eq '^(feat|fix|release|chore)\(v[0-9]+\.[0-9]+\.[0-9]+.*\)'; then
+          TAG=$(echo "$FIRST_LINE" | sed -E 's/^[^(]*\((v[0-9]+\.[0-9]+\.[0-9]+[^)]*)\).*/\1/')
           
+          # Check if tag already exists in remote
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists on remote, skipping."
+          else
+            echo "Creating annotated tag $TAG"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "$COMMIT_MSG"
+            git push origin "$TAG"
+            echo "Successfully created and pushed tag $TAG"
+          fi
+        else
+          echo "Commit does not match version tag pattern (e.g. feat(vX.Y.Z): ...). Skipping tag creation."
+        fi
