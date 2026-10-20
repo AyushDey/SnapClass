@@ -31,7 +31,7 @@ export default function App() {
         setTimeout(() => setToast(null), 3800);
     }, []);
 
-    // Initial and periodic backend health check
+    // Periodic and on-demand backend health check
     const verifyBackend = useCallback(async () => {
         try {
             await checkHealth();
@@ -42,10 +42,22 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        verifyBackend();
-        const interval = setInterval(verifyBackend, 15000);
-        return () => clearInterval(interval);
-    }, [verifyBackend]);
+        let isMounted = true;
+        const check = async () => {
+            try {
+                await checkHealth();
+                if (isMounted) setBackendStatus('connected');
+            } catch {
+                if (isMounted) setBackendStatus('error');
+            }
+        };
+        void check();
+        const interval = setInterval(check, 15000);
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, []);
 
     const handleClearImage = useCallback(() => {
         setPendingFile(null);

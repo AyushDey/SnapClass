@@ -895,19 +895,16 @@ def test_load_references_postgresql_dialect(session_factory, tmp_path):
 
     with patch.object(clf, "_scan_local_references", return_value={"pen": {"path": "/x", "label": "pen", "category": "Tools"}}):
         with patch.object(DBActions, "get_all_embeddings", return_value=mock_embeddings):
-            # We mock the bind.dialect.name
-            with patch("sqlalchemy.engine.interfaces.Dialect") as mock_dialect:
-                mock_dialect.name = "postgresql"
-                
-                # Mock session factory to return a session with this dialect name
-                db_session = session_factory()
-                db_session.bind.dialect = mock_dialect
-                
-                with patch.object(clf, "session_factory", return_value=db_session):
-                    clf.load_references()
-                    
-                    # Since it is postgresql dialect, search_matrix should NOT be built in memory
-                    assert clf.search_matrix is None
+            db_session = session_factory()
+            try:
+                with patch.object(type(db_session.bind.dialect), "name", new_callable=PropertyMock, return_value="postgresql"):
+                    with patch.object(clf, "session_factory", return_value=db_session):
+                        clf.load_references()
+                        
+                        # Since it is postgresql dialect, search_matrix should NOT be built in memory
+                        assert clf.search_matrix is None
+            finally:
+                db_session.close()
 
 
 def test_classify_production_path_matches_limit_break(session_factory, tmp_path):
