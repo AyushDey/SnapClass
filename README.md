@@ -15,8 +15,11 @@ SnapClass is an offline-first few-shot image classifier. The backend uses FastAP
 │   ├── schema_migrations.py  # DB initialization and legacy migration helpers
 │   ├── tests/                # Pytest suite
 │   └── .env.template         # Backend environment template
-├── frontend/                 # React/Vite UI
-│   └── src/
+├── frontend/                 # React/Vite UI with Bun runtime
+│   ├── src/                  # React components, hooks, and API client
+│   ├── test/                 # Automated UI component tests
+│   ├── bunfig.toml           # Bun test runner configuration
+│   └── bun.lock              # Fast reproducible lockfile
 ├── examples/                 # Sample images for manual testing
 ├── postman_collection.json   # Postman collection for API testing
 ├── POSTMAN_README.md         # Postman usage guide
@@ -30,11 +33,12 @@ SnapClass is an offline-first few-shot image classifier. The backend uses FastAP
 - Store embeddings persistently in PostgreSQL with `pgvector`.
 - Bulk import references from archives using `Category/Label/image` folder layouts.
 - Use the included frontend for webcam capture and manual uploads.
+- Lightning-fast frontend development, builds, and UI testing powered by Bun.
 
 ## Prerequisites
 
-- Python 3.13+
-- Node.js 20+ and npm
+- Python 3.13+ (managed via `uv`)
+- [Bun](https://bun.sh/) 1.0+ (recommended for frontend and UI testing) or Node.js 20+
 - PostgreSQL 14+ with the `pgvector` extension available
 
 ## Backend Setup
@@ -83,13 +87,15 @@ backend/certs/
 
 ## Frontend Setup
 
-The frontend is a separate Vite app in `frontend/`.
+The frontend is a React/Vite application located in `frontend/` powered by [Bun](https://bun.sh/) for ultra-fast builds and tests.
 
 ```bash
 cd frontend
-npm install
-npm run dev
+bun install
+bun run dev
 ```
+
+*(Alternatively, standard npm commands `npm install` and `npm run dev` are also supported via the maintained `package-lock.json`.)*
 
 By default the UI talks to `http://localhost:8000`, so the backend should be running on that address while you use the frontend.
 
@@ -146,6 +152,8 @@ For bulk uploads, SnapClass also accepts a two-level archive layout (`Label/imag
 
 ## Testing
 
+### Backend (pytest)
+
 Backend tests live under `backend/tests/`.
 
 ```bash
@@ -155,6 +163,17 @@ uv run pytest --cov=. --cov-report=term-missing --cov-fail-under=100
 ```
 
 The test suite uses mocks for the model and database interactions, so you do not need a running PostgreSQL instance to execute it.
+
+### Frontend UI Tests (bun test)
+
+Automated UI component tests live under `frontend/test/`.
+
+```bash
+cd frontend
+bun test test/
+```
+
+Tests run headlessly in ~400ms using Bun's native test runner, `@testing-library/react`, and `happy-dom`.
 
 ## Postman and Examples
 
